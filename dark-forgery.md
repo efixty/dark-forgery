@@ -95,19 +95,31 @@ context are already known, so these decisions are fully informed.*
 
 ### Phase 4 — Roles
 
-Based on the scope and stack, propose a role set. Always include:
+Based on the scope and stack, propose a role set. The only mandatory role is:
 - **Supervisor** (name it based on project — CEO, PM, Lead, Orchestrator — but the role is always the same: spawns agents, manages STATUS.md, reports to the user)
-- **Engineer** (always — implements features and fixes)
-- **QA** (always — verifies correctness against spec)
 
-Add only if the project actually needs them:
-- **Designer** — if there's a user-facing frontend
+Suggest the following only if the project actually needs them:
+- **Engineer** — if there is implementation work (code, config, infra)
+- **QA** — if correctness verification against a spec is valuable (most projects benefit; some pure research or automation projects don't need it)
+- **Designer** — if there's a user-facing frontend requiring UX decisions
 - **Researcher** — if the project requires ongoing data/market/technical research
 - **Data Engineer** — if the project has significant data pipeline work
 - **DevOps** — if the project has complex infrastructure beyond a single container
 
 For each role, briefly state: what they do, when they're spawned, what they output.
 Confirm the role list with the user before proceeding.
+
+Then, for each role that **reviews or approves work** (e.g. Reviewer Engineer, QA, Designer),
+ask: **"How many back-and-forth cycles before the supervisor pauses that PR and notifies you?"**
+
+Suggest sensible defaults based on the role:
+- Code review (Reviewer Engineer): 3 cycles
+- Testing/QA: 2 cycles
+- Design review: 1 cycle
+
+The user may override any of these. If a review role doesn't exist (e.g. no QA), skip that question.
+These limits are project-specific — record them in the CONSTITUTION project-specific additions section,
+not in the common core. The common core defines the mechanism; the project defines the numbers.
 
 Then ask: **"Should agents work sequentially or in parallel?"**
 
@@ -308,24 +320,21 @@ Examples:
 Every change goes through a PR:
   Engineer implements → opens PR
   → Supervisor spawns Reviewer Engineer → up to 3 review cycles
-  → After each "changes requested" review: Engineer addresses, pushes, increments
-    `Review cycles` in STATUS.md PR entry
-  → If Review cycles hit 3 with no approval: Engineer sets Status to needs-human,
-    adds Reason → Supervisor sends Reason to user via comm channel → work stops
-  → Reviewer approves → Supervisor spawns QA
-  → Up to 2 QA cycles (QA requests changes, Engineer addresses, QA re-tests)
-  → QA cycles hit 2/2, or Engineer disputes QA after one exchange: Engineer sets
-    Status to needs-human, adds Reason → Supervisor sends Reason to user → work stops
-  → QA approves → Engineer merges
-  → Engineer notifies Supervisor → Supervisor notifies user
+  → After each "changes requested" review: the acting agent addresses, pushes/updates,
+    then increments that role's cycle counter in the STATUS.md PR entry
+  → When any cycle counter hits its project-defined limit with no approval: agent sets
+    Status to needs-human, writes a plain-English Reason → Supervisor sends Reason to
+    user via comm channel → work on that PR stops immediately
+  → On receiving user resolution: Supervisor resets cycle counts, sets Status back to
+    in-review, clears Reason, resumes from the appropriate step
 Bypass requires explicit supervisor instruction.
 
-On receiving user resolution for a needs-human PR: Supervisor resets cycle counts,
-sets Status back to in-review, clears Reason, resumes from appropriate step.
+Cycle limits are **not defined here** — they are project-specific and live in the
+CONSTITUTION project additions section (set during Phase 4 of Dark Forgery).
 
 ## 12. STATUS.md is the supervisor's domain
-Only the supervisor writes to STATUS.md — with one exception: Engineers update the
-cycle count and Status on their own active PR entry after each review response.
+Only the supervisor writes to STATUS.md — with one exception: agents update their own
+cycle count and Status on their active PR entry after each review response.
 
 Every Active PR entry must follow this format:
 ```
@@ -333,14 +342,14 @@ Every Active PR entry must follow this format:
 - Branch: `feature/branch-name`
 - Spec: `docs/features/slug.md` or `docs/issues/id.md`
 - Status: open | in-review | merged | needs-human
-- Phase: ENGINEER | REVIEWER | QA | DESIGNER
-- Review cycles: N / 3
-- QA cycles: N / 2
-- Reason: ... (needs-human only — sent verbatim to user via comm channel)
+- Phase: {role-that-acts-now}
+- {Role} cycles: N / {limit}   (one line per review role; omit roles not in this project)
+- Reason: ...                   (needs-human only — sent verbatim to user via comm channel)
 ```
 `Status` = big-picture state of the PR.
 `Phase` = who must act right now; supervisor reads this on every startup to re-spawn.
 `Reason` = plain-English explanation; sent verbatim to the user when needs-human is set.
+Cycle limits come from the project-specific CONSTITUTION additions, not the common core.
 This makes conflict detection crash-tolerant: both signals survive process restarts.
 
 ## 13. Vault/log notes are mandatory for every feature and issue
