@@ -310,35 +310,38 @@ Every change goes through a PR:
   → Supervisor spawns Reviewer Engineer → up to 3 review cycles
   → After each "changes requested" review: Engineer addresses, pushes, increments
     `Review cycles` in STATUS.md PR entry
-  → If Review cycles hit 3 with no approval: Engineer sets Phase to NEED_HUMAN,
-    adds Reason → Supervisor sends BLOCKED: notification to user → work stops
+  → If Review cycles hit 3 with no approval: Engineer sets Status to needs-human,
+    adds Reason → Supervisor sends Reason to user via comm channel → work stops
   → Reviewer approves → Supervisor spawns QA
-  → QA requests changes, Engineer disputes after one exchange: Engineer sets Phase
-    to NEED_HUMAN → Supervisor sends BLOCKED: notification → work stops
+  → Up to 2 QA cycles (QA requests changes, Engineer addresses, QA re-tests)
+  → QA cycles hit 2/2, or Engineer disputes QA after one exchange: Engineer sets
+    Status to needs-human, adds Reason → Supervisor sends Reason to user → work stops
   → QA approves → Engineer merges
   → Engineer notifies Supervisor → Supervisor notifies user
 Bypass requires explicit supervisor instruction.
 
-On receiving user resolution for a NEED_HUMAN PR: Supervisor resets cycle counts,
-clears Phase, and resumes the PR flow from the appropriate step.
+On receiving user resolution for a needs-human PR: Supervisor resets cycle counts,
+sets Status back to in-review, clears Reason, resumes from appropriate step.
 
 ## 12. STATUS.md is the supervisor's domain
 Only the supervisor writes to STATUS.md — with one exception: Engineers update the
-cycle count and Phase on their own active PR entry after each review response.
+cycle count and Status on their own active PR entry after each review response.
 
 Every Active PR entry must follow this format:
 ```
 ### PR #N — title
 - Branch: `feature/branch-name`
 - Spec: `docs/features/slug.md` or `docs/issues/id.md`
-- Phase: ENGINEER | REVIEWER | QA | DESIGNER | NEED_HUMAN
+- Status: open | in-review | merged | needs-human
+- Phase: ENGINEER | REVIEWER | QA | DESIGNER
 - Review cycles: N / 3
-- QA cycles: N / 1
-- Reason: ... (include only when Phase is NEED_HUMAN)
+- QA cycles: N / 2
+- Reason: ... (needs-human only — sent verbatim to user via comm channel)
 ```
-`Phase` = who must act right now. Supervisor reads this on every startup to determine
-what to re-spawn. NEED_HUMAN means work on that PR is frozen until the user resolves it.
-This makes conflict detection crash-tolerant: the signal survives process restarts.
+`Status` = big-picture state of the PR.
+`Phase` = who must act right now; supervisor reads this on every startup to re-spawn.
+`Reason` = plain-English explanation; sent verbatim to the user when needs-human is set.
+This makes conflict detection crash-tolerant: both signals survive process restarts.
 
 ## 13. Vault/log notes are mandatory for every feature and issue
 Every PR introducing a new feature must include a note written to the configured logging
