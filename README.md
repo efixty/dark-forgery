@@ -42,7 +42,7 @@ Examples:
 /dark-forgery a self-hosted price tracker for Amazon wishlists
 ```
 
-Claude will guide you through 7 discovery phases, then generate the entire project scaffold in one pass.
+Claude will guide you through 8 discovery phases across 3 groups, then generate the entire project scaffold in one pass.
 
 ---
 
@@ -53,14 +53,17 @@ Claude will guide you through 7 discovery phases, then generate the entire proje
 | Phase | What gets decided |
 |---|---|
 | 0 — Intake | Confirms the idea, notes ambiguities |
+| **Group 1 — What are we building?** | |
 | 1 — Scope | What the project does, v1 boundaries, definition of done, who uses it |
-| 1.1 — Stack | Language choices with rationale; constraints and preferences |
-| 2 — Roles | Which agents are needed and what each owns |
-| 3 — Structure | Directory tree adapted to the confirmed stack |
-| 4 — Comms | How the supervisor reaches you (Telegram, Slack, Discord, email, or none) |
-| 5 — Credentials | Every secret and env var the project needs |
-| 6 — Logging | Where issues and feature progress are tracked (Obsidian, GitHub Issues, markdown, Linear, or none) |
-| 7 — Execution | Host machine, Docker container, or remote server |
+| 2 — Stack | Language choices with rationale; constraints and preferences |
+| 3 — Execution environment | Host machine, Docker, or remote — frames everything downstream |
+| **Group 2 — Who's working on it?** | |
+| 4 — Roles | Which agents are needed and what each owns |
+| 5 — Structure | Directory tree adapted to the confirmed stack and execution context |
+| **Group 3 — How does it operate?** | |
+| 6 — Comms | How the supervisor reaches you (Telegram, Slack, Discord, email, or none) |
+| 7 — Credentials | Every secret and env var the project needs |
+| 8 — Logging | Where issues and feature progress are tracked (Obsidian, GitHub Issues, markdown, Linear, or none) |
 
 ### Generation pass (all files in one shot)
 

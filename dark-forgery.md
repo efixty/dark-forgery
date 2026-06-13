@@ -16,7 +16,7 @@ then move to the next. If the user says "auto", "go ahead", "just do it", or sim
 any point — infer that they want you to complete all remaining phases without waiting for
 approval between them.
 
-**Never create files during the discovery phases (0–7).** Only generate files after all
+**Never create files during the discovery phases (0–8).** Only generate files after all
 phases are confirmed. Then generate everything in one pass.
 
 The argument `$ARGUMENTS` is the user's one-line idea. Use it as Phase 0 intake.
@@ -26,13 +26,19 @@ The argument `$ARGUMENTS` is the user's one-line idea. Use it as Phase 0 intake.
 ## Phase 0 — Intake
 
 Read the one-line idea from `$ARGUMENTS`. Restate it back in one sentence to confirm you
-understood it. Note any obvious ambiguities you'll clarify in Phase 1.
+understood it. Note any obvious ambiguities you'll clarify in the phases ahead.
 
 If no argument was provided, ask: "What's the idea? Give me one line."
 
 ---
 
-## Phase 1 — Project scope
+## Group 1 — What are we building?
+
+*Phases 1–3 establish the full technical picture of the project before touching org structure
+or operations. Knowing the stack and execution environment early means every subsequent
+question is framed correctly.*
+
+### Phase 1 — Scope
 
 Ask until you have unambiguous answers to all four:
 
@@ -44,9 +50,7 @@ Ask until you have unambiguous answers to all four:
 If the idea is clear enough that you can infer answers, state your inferences and ask
 the user to correct rather than making them answer from scratch.
 
----
-
-## Phase 1.1 — Technology stack
+### Phase 2 — Stack
 
 Based on the project's nature, propose a stack with a rationale for each choice:
 
@@ -62,9 +66,34 @@ Based on the project's nature, propose a stack with a rationale for each choice:
 Ask about constraints: language preferences, team familiarity, deployment target.
 Confirm the final stack before moving on. Document the "why" — agents need this context.
 
+### Phase 3 — Execution environment
+
+Ask: "Where does this run?"
+
+- **Host machine** — `source .env` pattern is fine; simpler entrypoint; no headful flow concerns
+- **Docker container** — env vars via `docker run --env-file`; flag any headful flows (browser auth, GUIs); generate entrypoint with preflight checks; document `--restart unless-stopped`
+- **Remote server** — same as Docker but note SSH/deploy workflow
+
+This decision shapes everything downstream: comms setup, credential handling, the entrypoint
+script, and whether headless compatibility is a concern. Confirm before proceeding.
+
+For Docker/remote, the entrypoint must:
+1. Check all required env vars (exit 1 if any missing)
+2. Check all required tools in PATH (exit 1 if any missing)
+3. Verify external auth (e.g. `gh auth status`) at startup
+4. Clone the repo on first boot if not present
+5. Clone the vault repo on first boot if vault logging is used
+6. Export `VAULT_PATH` before `cd {project}` (if vault is used)
+7. Loop forever: run supervisor → sleep on exit → restart
+
 ---
 
-## Phase 2 — Roles
+## Group 2 — Who's working on it?
+
+*Phases 4–5 define the agent org chart and the physical project layout. Stack and execution
+context are already known, so these decisions are fully informed.*
+
+### Phase 4 — Roles
 
 Based on the scope and stack, propose a role set. Always include:
 - **Supervisor** (name it based on project — CEO, PM, Lead, Orchestrator — but the role is always the same: spawns agents, manages STATUS.md, reports to the user)
@@ -80,9 +109,7 @@ Add only if the project actually needs them:
 For each role, briefly state: what they do, when they're spawned, what they output.
 Confirm the role list with the user before proceeding.
 
----
-
-## Phase 3 — Project structure
+### Phase 5 — Project structure
 
 Present the directory tree you'll generate, adapted to the confirmed stack.
 
@@ -116,7 +143,13 @@ removals from the base template and why.
 
 ---
 
-## Phase 4 — Communication channel
+## Group 3 — How does it operate?
+
+*Phases 6–8 cover the operational layer: how the supervisor talks to you, what secrets the
+project needs, and where work is tracked. Execution environment is already confirmed, so
+all three questions can be answered with full context.*
+
+### Phase 6 — Communication channel
 
 Ask: "How do you want the supervisor to reach you with updates?"
 
@@ -130,12 +163,10 @@ Present the options:
 For the chosen option, explain what credentials are needed and how to obtain them.
 Document the notify script name (e.g. `scripts/telegram_notify.sh`).
 
----
+### Phase 7 — Credentials & environment
 
-## Phase 5 — Credentials & environment
-
-Based on the stack and comm channel confirmed above, list every credential and env var
-the project needs. You'll generate three files:
+Based on the stack, execution environment, and comm channel confirmed above, list every
+credential and env var the project needs. You'll generate three files:
 
 - `docs/credentials.md` — human-readable table: name | purpose | where to get it
 - `docs/environment.md` — all runtime env vars: name | source | description
@@ -143,9 +174,7 @@ the project needs. You'll generate three files:
 
 Values are NEVER filled in — the user fills them in their private `.env` after setup.
 
----
-
-## Phase 6 — Logging & task tracking
+### Phase 8 — Logging & task tracking
 
 Ask: "Where should issues and feature progress be logged?"
 
@@ -159,25 +188,6 @@ Options and what each means:
 For Obsidian vault: ask whether they want it git-backed (separate repo, auto-push after each write). If yes, document the `VAULT_PATH` export strategy (captured as `$(pwd)/vault` before `cd {project}` so it resolves to WORKDIR).
 
 Generate the appropriate write script and document the note format.
-
----
-
-## Phase 7 — Execution environment
-
-Ask: "Where does this run?"
-
-- **Host machine** — `source .env` pattern is fine; simpler entrypoint
-- **Docker container** — env vars via `docker run --env-file`; flag any headful flows (browser auth, GUIs); generate entrypoint with preflight checks; document `--restart unless-stopped`
-- **Remote server** — same as Docker but note SSH/deploy workflow
-
-For Docker/remote, the entrypoint must:
-1. Check all required env vars (exit 1 if any missing)
-2. Check all required tools in PATH (exit 1 if any missing)
-3. Verify external auth (e.g. `gh auth status`) at startup
-4. Clone the repo on first boot if not present
-5. Clone the vault repo on first boot if vault is used
-6. Export `VAULT_PATH` before `cd {project}` (if vault is used)
-7. Loop forever: run supervisor → sleep on exit → restart
 
 ---
 
@@ -226,7 +236,7 @@ Add build artifacts for the confirmed stack.
 
 ### 3. `CONSTITUTION.md` — CRITICAL, write this carefully
 
-The CONSTITUTION has a **locked common core** (rules 1–12, identical across ALL dark factories)
+The CONSTITUTION has a **locked common core** (rules 1–13, identical across ALL dark factories)
 followed by project-specific additions. The common core is:
 
 ```markdown
