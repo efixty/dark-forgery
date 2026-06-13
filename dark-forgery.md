@@ -109,6 +109,17 @@ Add only if the project actually needs them:
 For each role, briefly state: what they do, when they're spawned, what they output.
 Confirm the role list with the user before proceeding.
 
+Then ask: **"Should agents work sequentially or in parallel?"**
+
+- **Sequential** (default, simpler) — supervisor spawns one agent at a time; waits for it to finish before spawning the next; no branch conflicts; easier crash recovery
+- **Parallel** — supervisor spawns multiple agents simultaneously on independent tasks; faster throughput; **requires git worktrees** so each agent has an isolated checkout and they don't clobber each other's working tree
+
+If parallel is chosen:
+- The supervisor must create a worktree per agent before spawning: `git worktree add ../{project}-{branch} {branch}`
+- Each agent runs inside its own worktree directory, not the main checkout
+- `.claude/settings.json` must include `"Bash(git worktree *)"` in the allow list
+- Document the worktree lifecycle in CLAUDE.md: create on spawn, remove after merge (`git worktree remove`)
+
 ### Phase 5 — Project structure
 
 Present the directory tree you'll generate, adapted to the confirmed stack.
@@ -400,6 +411,8 @@ Bash permissions for the scripts and tools used in this project:
   }
 }
 ```
+
+If **parallel** agent spawning was chosen in Phase 4, add `"Bash(git worktree *)"` to the allow list. `git *` does not cover `git worktree` subcommands in Claude Code's permission model — it must be listed explicitly.
 
 ### 9. `scripts/{supervisor}_entrypoint.sh`
 
