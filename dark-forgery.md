@@ -308,14 +308,37 @@ Examples:
 Every change goes through a PR:
   Engineer implements → opens PR
   → Supervisor spawns Reviewer Engineer → up to 3 review cycles
+  → After each "changes requested" review: Engineer addresses, pushes, increments
+    `Review cycles` in STATUS.md PR entry
+  → If Review cycles hit 3 with no approval: Engineer sets Phase to NEED_HUMAN,
+    adds Reason → Supervisor sends BLOCKED: notification to user → work stops
   → Reviewer approves → Supervisor spawns QA
+  → QA requests changes, Engineer disputes after one exchange: Engineer sets Phase
+    to NEED_HUMAN → Supervisor sends BLOCKED: notification → work stops
   → QA approves → Engineer merges
   → Engineer notifies Supervisor → Supervisor notifies user
 Bypass requires explicit supervisor instruction.
 
+On receiving user resolution for a NEED_HUMAN PR: Supervisor resets cycle counts,
+clears Phase, and resumes the PR flow from the appropriate step.
+
 ## 12. STATUS.md is the supervisor's domain
-Only the supervisor writes to STATUS.md. Other roles report to the supervisor;
-the supervisor decides what goes in STATUS.md. Reading STATUS.md is fine for all roles.
+Only the supervisor writes to STATUS.md — with one exception: Engineers update the
+cycle count and Phase on their own active PR entry after each review response.
+
+Every Active PR entry must follow this format:
+```
+### PR #N — title
+- Branch: `feature/branch-name`
+- Spec: `docs/features/slug.md` or `docs/issues/id.md`
+- Phase: ENGINEER | REVIEWER | QA | DESIGNER | NEED_HUMAN
+- Review cycles: N / 3
+- QA cycles: N / 1
+- Reason: ... (include only when Phase is NEED_HUMAN)
+```
+`Phase` = who must act right now. Supervisor reads this on every startup to determine
+what to re-spawn. NEED_HUMAN means work on that PR is frozen until the user resolves it.
+This makes conflict detection crash-tolerant: the signal survives process restarts.
 
 ## 13. Vault/log notes are mandatory for every feature and issue
 Every PR introducing a new feature must include a note written to the configured logging
