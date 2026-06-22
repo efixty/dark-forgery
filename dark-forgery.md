@@ -78,13 +78,22 @@ This decision shapes everything downstream: comms setup, credential handling, th
 script, and whether headless compatibility is a concern. Confirm before proceeding.
 
 For Docker/remote, the entrypoint must:
-1. Check all required env vars (exit 1 if any missing)
-2. Check all required tools in PATH (exit 1 if any missing)
+1. Check all required env vars — collect and report every miss, then exit non-zero if any
+2. Check all required tools in PATH — collect and report every miss
 3. Verify external auth (e.g. `gh auth status`) at startup
 4. Clone the repo on first boot if not present
 5. Clone the vault repo on first boot if vault logging is used
 6. Export `VAULT_PATH` before `cd {project}` (if vault is used)
 7. Loop forever: run supervisor → sleep on exit → restart
+8. Support a **`--check` dry-run flag**: run the full preflight (steps 1–3), a one-shot
+   Claude Code spawn test, then a **deep self-test** — clone the repo to a throwaway temp dir
+   and spawn the supervisor on a dedicated *check prompt* that (a) reads CLAUDE.md,
+   CONSTITUTION.md, and the supervisor role doc and confirms the critical facts are present
+   and coherent, and (b) sends a sample message through the comm channel if one is configured.
+   Report all findings, tear down the temp clone, and exit — no persistent clone, no `make
+   setup`, no poller, no loop. This is how the operator validates the environment before a
+   real run: same preflight as the live boot, plus proof the governance docs and comm channel
+   actually work, run once.
 
 ---
 
@@ -131,6 +140,28 @@ If parallel is chosen:
 - Each agent runs inside its own worktree directory, not the main checkout
 - `.claude/settings.json` must include `"Bash(git worktree *)"` in the allow list
 - Document the worktree lifecycle in CLAUDE.md: create on spawn, remove after merge (`git worktree remove`)
+
+Then ask: **"Which model should each role run on?"**
+
+Present per-role suggestions as a starting point — the user overrides any of them:
+
+| Role | Suggested model | Notes |
+|---|---|---|
+| Supervisor | Sonnet | Always Sonnet — coordination and judgment, not deep implementation |
+| Engineer | Sonnet, **Opus for complex tasks** | Supervisor escalates to Opus only when it judges the task complex |
+| Reviewer Engineer | Sonnet, **Opus for complex tasks** | Same complexity-gated escalation as Engineer |
+| QA | Sonnet | |
+| Designer | Sonnet | |
+
+Three rules always hold regardless of the user's per-role choices:
+
+1. **Effort is always high** for every role, every spawn. This is non-negotiable and is not a per-role choice.
+2. **Opus is reserved for complexity.** When a role's policy is "Opus for complex tasks," the supervisor must *infer* task complexity and state *explicitly in the task brief* whether this spawn is Opus or Sonnet, with a one-line reason. No silent upgrades — every Opus spawn is a stated decision.
+3. **Model availability is bounded by the Phase 9 auth tier.** If OAuth on a tier without Opus access is chosen, the Opus-for-complex-tasks policy cannot apply — fall back to Sonnet for those roles and note it in the role doc.
+
+Record the final per-role model policy. During generation it is encoded in two places:
+- the **supervisor's own model** → `--model {supervisor-model}` flag in the entrypoint
+- **every other role's model** → the `model` parameter the supervisor passes to the Agent tool at spawn time, per the policy and the complexity rule above
 
 ### Phase 5 — Project structure
 
@@ -211,6 +242,56 @@ Options and what each means:
 For Obsidian vault: ask whether they want it git-backed (separate repo, auto-push after each write). If yes, document the `VAULT_PATH` export strategy (captured as `$(pwd)/vault` before `cd {project}` so it resolves to WORKDIR).
 
 Generate the appropriate write script and document the note format.
+
+### Phase 9 — Claude Code authentication & billing
+
+Ask: "How will the factory's Claude Code process authenticate?"
+
+Present the two options:
+
+**Option A — API key**
+Set `ANTHROPIC_API_KEY` in the env-file. Claude Code uses it for every call. Billing is pay-as-you-go via console.anthropic.com. Simple to set up; costs accumulate per token.
+
+- Add `ANTHROPIC_API_KEY` to `docs/credentials.md` and `.env.example`
+- Add it to the entrypoint preflight env var check
+- Recommend the user set a spend alert in the Anthropic console
+
+**Option B — OAuth session (Claude Max / Pro)**
+Claude Code authenticates via a stored session rather than an API key. Usage is billed against the subscription. No API key needed. Works headlessly via a volume-mounted config directory.
+
+Setup on the host before the first `docker run`:
+```bash
+# Create a dedicated config dir without touching ~/.claude
+CLAUDE_CONFIG_DIR=~/.claude-{project} claude
+# Run /login inside the session
+```
+
+Then mount it into the container:
+```bash
+--volume ~/.claude-{project}:/home/{container-user}/.claude
+```
+
+The entrypoint must symlink `.claude.json` to the home root (Claude Code looks there too):
+```bash
+ln -sf "${HOME}/.claude/.claude.json" "${HOME}/.claude.json" 2>/dev/null || true
+```
+
+**Do NOT set `ANTHROPIC_API_KEY`** — if present, it overrides OAuth and bills separately.
+
+**Ownership warning**: the mounted directory is owned by the host user's UID. If the container runs as a different user, permission errors will prevent Claude Code from writing session state.
+
+Two solutions:
+- Add `--user $(id -u):$(id -g) -e HOME=/home/{container-user}` to `docker run` — container process runs as the host UID, owns the mount natively (recommended)
+- Or: `find ~/.claude-{project} -type d -exec chmod 777 {} \; && find ~/.claude-{project} -type f -exec chmod 644 {} \;` on the host (simpler, acceptable on a private server)
+
+**Re-authentication**: OAuth tokens expire. When the factory reports "Not logged in":
+```bash
+CLAUDE_CONFIG_DIR=~/.claude-{project} claude
+# Run /login
+```
+Refreshed credentials are picked up on next container start via the volume mount.
+
+Document the chosen approach in `docs/environment.md` and `docs/credentials.md`.
 
 ---
 
@@ -400,6 +481,14 @@ Each role doc must include:
 Role docs are the agent's operating manual. They must be complete enough that a fresh
 agent can work without any prior context beyond what's injected in the task brief.
 
+**The supervisor's role doc must additionally encode the Phase 4 model policy** in its
+"Spawning agents" section:
+- The exact `model` to pass to the Agent tool for each role.
+- The complexity rule verbatim for any role with an Opus-for-complex-tasks policy: the
+  supervisor infers complexity, picks Opus or Sonnet, and states the choice plus a one-line
+  reason in the task brief. No silent upgrades.
+- A reminder that all spawns run at high effort.
+
 ### 6. `STATUS.md` — initial board
 
 Pre-populate from Phase 1 discovery:
@@ -456,28 +545,70 @@ For Docker/remote execution:
 #!/usr/bin/env bash
 set -e
 
+# --check runs preflight + spawn test + a deep self-test (docs + comm channel),
+# then exits without cloning persistently, without the poller, and without the loop.
+CHECK_ONLY=0
+[ "${1:-}" = "--check" ] && CHECK_ONLY=1
+
+# ── Preflight: collect every miss, don't stop at the first ────────────────────
 echo "Checking environment..."
+FAIL=0
 for var in {LIST_OF_REQUIRED_ENV_VARS}; do
   if [ -z "${!var:-}" ]; then
-    echo "ERROR: $var is not set — check your --env-file" >&2
-    exit 1
+    echo "MISSING ENV:  $var — check your --env-file" >&2
+    FAIL=1
   fi
 done
 
 for cmd in {LIST_OF_REQUIRED_TOOLS}; do
   if ! command -v "$cmd" > /dev/null 2>&1; then
-    echo "ERROR: $cmd not found in PATH — check the Docker image" >&2
-    exit 1
+    echo "MISSING TOOL: $cmd — check the Docker image" >&2
+    FAIL=1
   fi
 done
 
 # Verify external auth
 if ! gh auth status > /dev/null 2>&1; then
-  echo "ERROR: GitHub auth failed — check GITHUB_TOKEN" >&2
+  echo "AUTH FAIL:    GitHub — check your token" >&2
+  FAIL=1
+fi
+
+if [ "$FAIL" = "1" ]; then
+  echo "Preflight FAILED — fix the items above and re-run." >&2
+  exit 1
+fi
+echo "Preflight OK."
+
+# ── Spawn test: confirm Claude Code launches and authenticates (both modes) ───
+echo "Testing Claude Code spawn..."
+SPAWN_OUT="$(claude --model {supervisor-model} --dangerously-skip-permissions \
+  -p 'Reply with exactly this token and nothing else: FACTORY_CHECK_OK' 2>&1)" || true
+if echo "$SPAWN_OUT" | grep -q "FACTORY_CHECK_OK"; then
+  echo "Claude Code spawn test: PASS"
+else
+  echo "Claude Code spawn test: FAIL — Claude Code did not launch/authenticate." >&2
+  echo "$SPAWN_OUT" >&2
   exit 1
 fi
 
-echo "Preflight OK."
+# ── --check: deep self-test against the real docs, then exit (no loop) ─────────
+# Clones to a throwaway dir so nothing persists. Spawns the supervisor on the check
+# prompt: it validates the governance docs and pings the comm channel, then we tear down.
+if [ "$CHECK_ONLY" = "1" ]; then
+  echo "Running deep self-test (docs + comm channel)..."
+  CHECK_DIR="$(mktemp -d)"
+  if ! git clone --depth 1 "https://${GITHUB_TOKEN}@github.com/{GITHUB_REPO_URL}.git" \
+       "$CHECK_DIR/{project-name}" > /dev/null 2>&1; then
+    echo "Repo clone FAILED — check the repo URL and token." >&2
+    rm -rf "$CHECK_DIR"; exit 1
+  fi
+  ( cd "$CHECK_DIR/{project-name}" \
+    && claude --model {supervisor-model} --dangerously-skip-permissions \
+         -p "$(cat scripts/{supervisor}_check_prompt.md)" )
+  rm -rf "$CHECK_DIR"
+  echo "--check complete — review PASS/FAIL above. No persistent clone, no poller, no loop."
+  exit 0
+fi
 
 # First boot: clone repo
 if [ ! -f "{project-name}/CLAUDE.md" ]; then
@@ -499,7 +630,7 @@ git config --global user.name "{user-name}"
 git config --global user.email "{user-email}"
 
 while true; do
-  claude --dangerously-skip-permissions -p \
+  claude --model {supervisor-model} --dangerously-skip-permissions -p \
     "$(cat scripts/{supervisor}_prompt.md)
 
 Current factory state (STATUS.md):
@@ -509,6 +640,9 @@ $(cat STATUS.md)"
   sleep 300
 done
 ```
+
+`{supervisor-model}` is the model confirmed in Phase 4 (suggested default: `sonnet`). The
+supervisor always runs at high effort.
 
 For host machine execution, a simpler version without preflight and Docker patterns.
 
@@ -535,6 +669,44 @@ Startup procedure:
 
 You are running autonomously. Do not wait for confirmation before reading docs.
 ```
+
+### 10b. `scripts/{supervisor}_check_prompt.md`
+
+The prompt injected by the entrypoint's `--check` deep self-test. Unlike the real startup
+prompt, it **never spawns agents, never touches STATUS.md, and never starts real work** — it
+reads the governance docs, confirms they are complete and coherent, exercises the comm
+channel, and reports. Tailor the checklist to the project's actual contracts and roles.
+
+```markdown
+You are running a one-shot ENVIRONMENT SELF-TEST for the {project} dark factory.
+This is NOT a real session. Do not spawn agents. Do not modify STATUS.md. Do not start work.
+Read the docs, verify each item below, and report PASS or FAIL with a one-line reason for each.
+
+## 1. Governance docs are present and coherent
+Read `CLAUDE.md`, `CONSTITUTION.md`, and `docs/roles/{supervisor}.md`. Confirm each contains
+the critical facts a fresh agent needs — FAIL any that is missing, empty, or self-contradictory:
+- CLAUDE.md: project purpose, component table, every interface contract (API/CLI/data schemas),
+  role roster, MR workflow, logging destination, comm channel, env vars, build shortcuts
+- CONSTITUTION.md: the common-core rules and the project-specific cycle limits
+- {supervisor}.md: authority, spawn procedure, per-role model policy, escalation chain
+Cross-check: the roles named in CLAUDE.md exist as docs under `docs/roles/`; the cycle limits
+in CONSTITUTION.md match what {supervisor}.md enforces.
+
+## 2. Comm channel round-trip   (only if a channel is configured)
+Send a sample message via `scripts/{notify_script}.sh`:
+  "{Project} --check self-test OK — governance docs validated, comm channel live."
+PASS if the script exits 0 and {user} would receive it. FAIL on any error.
+
+## 3. Logging destination is reachable   (only if vault/log writes are configured)
+Confirm the write script exists and `VAULT_PATH` (or the configured target) is set.
+Do a dry validation only — do not commit a real note.
+
+## Summary
+List every FAIL with a one-line fix. If all pass, end with exactly: SELF_TEST_OK
+```
+
+Adapt section 1's checklist to the exact contracts this project defines — the goal is that
+a green self-test means a fresh supervisor could boot and act without missing information.
 
 ### 11. `scripts/{notify_script}.sh`
 The notification helper for the confirmed comm channel. Include usage comments,
@@ -587,7 +759,10 @@ git commit -m "forge: dark factory scaffold — {project description}"
 After generation, tell the user exactly what to do next:
 1. Create the GitHub remote and push
 2. Fill in `.env` with real credentials (referencing `docs/credentials.md` for what's needed)
-3. Start the factory with the appropriate command
+3. Validate the environment with the dry run: `scripts/{supervisor}_entrypoint.sh --check`
+   (Docker: same image, override the entrypoint with the `--check` arg.) Fix anything it
+   reports before the real start.
+4. Start the factory with the appropriate command
 
 ---
 
