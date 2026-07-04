@@ -84,7 +84,9 @@ For Docker/remote, the entrypoint must:
 4. Clone the repo on first boot if not present
 5. Clone the vault repo on first boot if vault logging is used
 6. Export `VAULT_PATH` before `cd {project}` (if vault is used)
-7. Loop forever: run supervisor → sleep on exit → restart
+7. Loop: run the supervisor for **one cycle**, then read its `.{supervisor}_exit` sentinel and
+   wait before relaunching a fresh session — `completed` → 90s, `idle` → 900s, crash/absent → 300s.
+   Send a single "factory online" notification once per boot, before the loop (not per cycle)
 8. Support a **`--check` dry-run flag**: run the full preflight (steps 1–3), a one-shot
    Claude Code spawn test, then a **deep self-test** — clone the repo to a throwaway temp dir
    and spawn the supervisor on a dedicated *check prompt* that (a) reads CLAUDE.md,
@@ -147,21 +149,38 @@ Present per-role suggestions as a starting point — the user overrides any of t
 
 | Role | Suggested model | Notes |
 |---|---|---|
-| Supervisor | Sonnet | Always Sonnet — coordination and judgment, not deep implementation |
+| Supervisor | Sonnet | Coordination and judgment, not deep implementation |
 | Engineer | Sonnet, **Opus for complex tasks** | Supervisor escalates to Opus only when it judges the task complex |
 | Reviewer Engineer | Sonnet, **Opus for complex tasks** | Same complexity-gated escalation as Engineer |
 | QA | Sonnet | |
 | Designer | Sonnet | |
 
-Three rules always hold regardless of the user's per-role choices:
+Then ask: **"What effort level should agents run at?"** Suggest **high** — best output, and the
+sensible default for autonomous work. The user may choose lower. Effort is a single factory-wide
+choice, not per-role: it is set on the supervisor session and every sub-agent inherits it. Record
+it as `{supervisor-effort}`.
 
-1. **Effort is always high** for every role, every spawn. This is non-negotiable and is not a per-role choice.
-2. **Opus is reserved for complexity.** When a role's policy is "Opus for complex tasks," the supervisor must *infer* task complexity and state *explicitly in the task brief* whether this spawn is Opus or Sonnet, with a one-line reason. No silent upgrades — every Opus spawn is a stated decision.
-3. **Model availability is bounded by the Phase 9 auth tier.** If OAuth on a tier without Opus access is chosen, the Opus-for-complex-tasks policy cannot apply — fall back to Sonnet for those roles and note it in the role doc.
+Two rules always hold regardless of the user's per-role choices:
 
-Record the final per-role model policy. During generation it is encoded in two places:
-- the **supervisor's own model** → `--model {supervisor-model}` flag in the entrypoint
-- **every other role's model** → the `model` parameter the supervisor passes to the Agent tool at spawn time, per the policy and the complexity rule above
+1. **Opus is reserved for complexity.** When a role's policy is "Opus for complex tasks," the supervisor must *infer* task complexity and state *explicitly in the task brief* whether this spawn is Opus or Sonnet, with a one-line reason. No silent upgrades — every Opus spawn is a stated decision.
+2. **Model availability is bounded by the Phase 9 auth tier.** If OAuth on a tier without Opus access is chosen, the Opus-for-complex-tasks policy cannot apply — fall back to Sonnet for those roles and note it in the role doc.
+
+Record the final per-role model policy and the effort level. Model and effort are **enforced at
+the runtime/config level**; *how* the sub-agent model is enforced depends on whether it is uniform:
+
+- **Supervisor** (always) → `--model {supervisor-model} --effort {supervisor-effort}` on its
+  `claude -p` invocations in the entrypoint. Sub-agents inherit the session effort.
+- **Sub-agent model — uniform policy** (every sub-agent runs the *same* model, no complexity-gated
+  escalation; e.g. the user picks "all agents Opus") → pin it with
+  `export CLAUDE_CODE_SUBAGENT_MODEL={subagent-model}` in the entrypoint. This env var is the
+  highest-precedence sub-agent model source, so it forces the choice with no per-spawn decision.
+- **Sub-agent model — mixed / complexity-gated policy** (models differ per role, or use the Opus-
+  for-complexity rule above) → do **not** set that env var — it would override the per-spawn
+  choice. The supervisor passes the `model` parameter to the Agent tool at spawn time per the
+  policy and the complexity rule, enforced by explicit instructions in its role doc.
+
+The env var is a tool to reach for when it fits the chosen policy, not a requirement — pick the
+enforcement path that matches what the user selected.
 
 ### Phase 5 — Project structure
 
@@ -335,7 +354,9 @@ dist/
 __pycache__/
 *.pyc
 .DS_Store
+.{supervisor}_exit
 ```
+`.{supervisor}_exit` is per-session runtime state (the supervisor's exit sentinel) — never commit it.
 Add build artifacts for the confirmed stack.
 
 ### 3. `CONSTITUTION.md` — CRITICAL, write this carefully
@@ -404,11 +425,15 @@ Every change goes through a PR:
   → After each "changes requested" review: the acting agent addresses, pushes/updates,
     then increments that role's cycle counter in the STATUS.md PR entry
   → When any cycle counter hits its project-defined limit with no approval: agent sets
-    Status to needs-human, writes a plain-English Reason → Supervisor sends Reason to
-    user via comm channel → work on that PR stops immediately
+    Status to needs-human, writes a plain-English Reason → Supervisor sends the Reason to the
+    user via comm channel **only if `Reason-sent` is not already `yes`**, then sets
+    `Reason-sent: yes` on the entry → work on that PR stops immediately
   → On receiving user resolution: Supervisor resets cycle counts, sets Status back to
-    in-review, clears Reason, resumes from the appropriate step
+    in-review, clears both Reason and `Reason-sent`, resumes from the appropriate step
 Bypass requires explicit supervisor instruction.
+
+Because a fresh supervisor session re-scans blocked/needs-human items on every startup, the
+`Reason-sent` flag is what stops the same Reason being re-sent to the user each cycle.
 
 Cycle limits are **not defined here** — they are project-specific and live in the
 CONSTITUTION project additions section (set during Phase 4 of Dark Forgery).
@@ -426,10 +451,13 @@ Every Active PR entry must follow this format:
 - Phase: {role-that-acts-now}
 - {Role} cycles: N / {limit}   (one line per review role; omit roles not in this project)
 - Reason: ...                   (needs-human only — sent verbatim to user via comm channel)
+- Reason-sent: yes | no         (needs-human only — set to yes once the Reason has been sent)
 ```
 `Status` = big-picture state of the PR.
 `Phase` = who must act right now; supervisor reads this on every startup to re-spawn.
 `Reason` = plain-English explanation; sent verbatim to the user when needs-human is set.
+`Reason-sent` = whether the Reason has already been delivered; the supervisor sends a Reason only
+when this is not `yes`, so a per-cycle restart never re-notifies the user about the same block.
 Cycle limits come from the project-specific CONSTITUTION additions, not the common core.
 This makes conflict detection crash-tolerant: both signals survive process restarts.
 
@@ -458,6 +486,11 @@ without asking any questions. Include:
 - **How to run** — step-by-step per component, then full-stack
 - **Interface contracts** — every API endpoint, CLI flag, stdout schema, data format
 - **Org structure** — role table linking to `docs/roles/`, report chain diagram
+- **Model & effort policy** — the supervisor model+effort (pinned by `--model`/`--effort` in the
+  entrypoint) and the sub-agent model policy, stating which enforcement path is in effect: if
+  `CLAUDE_CODE_SUBAGENT_MODEL` is set, all sub-agents are pinned to it and the supervisor must NOT
+  pass a model per spawn; otherwise the supervisor chooses the model per spawn per the complexity
+  rule. Effort is the same factory-wide value, inherited by every sub-agent.
 - **MR workflow** — the exact sequence from implement to merge
 - **Logging** — where notes go, which script to use, what format
 - **Communication** — which channel, which script, message format
@@ -481,13 +514,28 @@ Each role doc must include:
 Role docs are the agent's operating manual. They must be complete enough that a fresh
 agent can work without any prior context beyond what's injected in the task brief.
 
-**The supervisor's role doc must additionally encode the Phase 4 model policy** in its
-"Spawning agents" section:
-- The exact `model` to pass to the Agent tool for each role.
-- The complexity rule verbatim for any role with an Opus-for-complex-tasks policy: the
-  supervisor infers complexity, picks Opus or Sonnet, and states the choice plus a one-line
-  reason in the task brief. No silent upgrades.
-- A reminder that all spawns run at high effort.
+**The supervisor's role doc must additionally encode two things:**
+
+**(a) The Phase 4 model & effort policy**, in its "Spawning agents" section:
+- Which enforcement path is in effect. If the factory sets `CLAUDE_CODE_SUBAGENT_MODEL`, the
+  supervisor must **not** pass a `model` when spawning — every sub-agent is pinned to that model
+  by the runtime. Otherwise, the exact `model` to pass to the Agent tool for each role.
+- The complexity rule verbatim for any role with an Opus-for-complex-tasks policy (mixed-policy
+  factories only): the supervisor infers complexity, picks Opus or Sonnet, and states the choice
+  plus a one-line reason in the task brief. No silent upgrades.
+- Effort is `{supervisor-effort}` for the whole factory — set on the supervisor session and
+  inherited by every sub-agent; the supervisor does not set effort per spawn.
+
+**(b) One cycle per session (lifecycle & recovery).** The supervisor's session is disposable and
+handles at most one cycle; STATUS.md is the persistent memory. The role doc must state:
+- The exit-reason table: as its final action the supervisor writes one word to
+  `.{supervisor}_exit` — `completed` (ran/advanced/merged a cycle; more may be queued) or `idle`
+  (nothing actionable). A missing sentinel is treated as a crash. The entrypoint maps these to the
+  relaunch wait (completed → 90s, idle → 900s, crash/absent → 300s).
+- The startup procedure, run once per session: read the board and any inbound human input once
+  (never re-check comms mid-cycle) → send any un-sent blocked/needs-human Reasons → resume an
+  in-flight PR by its `Phase`, else pick one backlog item → drive it to the next resting point →
+  write the sentinel → exit. No "repeat from step 1" — a fresh session takes the next item.
 
 ### 6. `STATUS.md` — initial board
 
@@ -544,6 +592,13 @@ For Docker/remote execution:
 ```bash
 #!/usr/bin/env bash
 set -e
+
+# Sub-agent model enforcement — EMIT THIS LINE ONLY for a uniform sub-agent policy (Phase 4 chose
+# a single model for every sub-agent, no complexity-gated escalation). CLAUDE_CODE_SUBAGENT_MODEL
+# is the highest-precedence sub-agent model source, so it pins every spawned agent to this model.
+# For a per-role / complexity-gated policy, OMIT this line — the supervisor sets the model per
+# spawn per docs/roles/{supervisor}.md, and this env var would override that choice.
+export CLAUDE_CODE_SUBAGENT_MODEL={subagent-model}
 
 # --check runs preflight + spawn test + a deep self-test (docs + comm channel),
 # then exits without cloning persistently, without the poller, and without the loop.
@@ -629,20 +684,42 @@ cd {project-name}
 git config --global user.name "{user-name}"
 git config --global user.email "{user-email}"
 
+# Announce boot exactly once — not per cycle. Uses the confirmed comm channel; never fatal.
+scripts/{notify_script}.sh "factory online" || true
+
 while true; do
-  claude --model {supervisor-model} --dangerously-skip-permissions -p \
+  rm -f .{supervisor}_exit
+  CODE=0
+  claude --model {supervisor-model} --effort {supervisor-effort} --dangerously-skip-permissions -p \
     "$(cat scripts/{supervisor}_prompt.md)
 
 Current factory state (STATUS.md):
-$(cat STATUS.md)"
+$(cat STATUS.md)" || CODE=$?
 
-  echo "{Supervisor} exited (code $?) at $(date) — restarting in 5 minutes..."
-  sleep 300
+  # The supervisor's last action is to write one word to .{supervisor}_exit. Absent = crash.
+  REASON="crash"
+  if [ -f .{supervisor}_exit ]; then
+    REASON="$(tr -d '[:space:]' < .{supervisor}_exit)"   # tolerate a trailing newline
+    rm -f .{supervisor}_exit
+  fi
+  case "$REASON" in
+    completed) WAIT=90  ;;   # advanced a cycle; more may be queued — relaunch soon
+    idle)      WAIT=900 ;;   # nothing actionable — stay quiet ~15 min
+    *)         WAIT=300 ;;   # crashed/overflowed before writing the sentinel — backoff
+  esac
+  echo "{Supervisor} exited (reason=$REASON, code=$CODE) at $(date) — next session in ${WAIT}s..."
+  sleep "$WAIT"
 done
 ```
 
-`{supervisor-model}` is the model confirmed in Phase 4 (suggested default: `sonnet`). The
-supervisor always runs at high effort.
+Each loop iteration is one disposable supervisor session that handles a single cycle and exits;
+the `.{supervisor}_exit` sentinel it writes drives the relaunch wait. The `|| CODE=$?` guard is
+required because `set -e` is active — without it a crashing session would kill the whole loop
+instead of falling through to the 300s backoff. `{supervisor-model}` and `{supervisor-effort}`
+are the values confirmed in Phase 4 (suggested defaults: `sonnet` / `high`); the sub-agent model
+is enforced separately (the `CLAUDE_CODE_SUBAGENT_MODEL` export above for a uniform policy, or the
+supervisor's per-spawn choice otherwise). The `completed` (90s) and `idle` (900s) waits are the
+two tunable throughput/quiet knobs.
 
 For host machine execution, a simpler version without preflight and Docker patterns.
 
@@ -653,19 +730,32 @@ The startup prompt injected every time the supervisor starts (fresh or after cra
 ```markdown
 You are the {Supervisor} of the {project} project running inside a dark factory.
 
+This session handles **at most one cycle of work, then exits.** You are disposable; STATUS.md is
+the persistent memory. After you exit, a fresh session starts, rebuilds state from STATUS.md, and
+takes the next item — so never try to drain the whole backlog in one session.
+
 Read in this order before doing anything else:
 1. `docs/roles/{supervisor}.md` — your role, authority, and workflows
 2. `CLAUDE.md` — project context and interface contracts
 3. `CONSTITUTION.md` — rules all agents follow unconditionally
 
 The current factory state (STATUS.md) has been injected above.
-Use it to determine what was happening before this session started.
 
-Startup procedure:
-- If active agents or in-progress PRs are listed in STATUS.md: re-spawn the relevant
-  agents with the same task brief to continue where they left off.
-- If no active work: send a {comm_channel} message to {user} that you are online
-  and awaiting instructions.
+Startup procedure — do this ONCE, at the start, then never re-check comms mid-cycle:
+- Read the board and any inbound message from {user} now, once. Do not re-check {comm_channel}
+  again during this cycle.
+- For any needs-human item whose `Reason-sent` is not `yes`: send its Reason to {user} and set
+  `Reason-sent: yes`. Never re-send an already-sent Reason.
+- If an in-flight PR is listed, resume it from its `Phase` and drive it to the next resting point
+  (review handoff, merge, or needs-human). Otherwise pick ONE backlog item and drive it to its
+  next resting point.
+
+Handle exactly ONE cycle. Do NOT loop into a second task.
+
+MANDATORY LAST ACTION: write a single word to `.{supervisor}_exit`, then STOP immediately:
+- `completed` — you ran, advanced, or merged a cycle (more work may be queued)
+- `idle` — nothing was actionable (empty backlog, or every PR is blocked on {user})
+Do not start another task after writing it. A missing sentinel is treated as a crash.
 
 You are running autonomously. Do not wait for confirmation before reading docs.
 ```
@@ -688,7 +778,9 @@ the critical facts a fresh agent needs — FAIL any that is missing, empty, or s
 - CLAUDE.md: project purpose, component table, every interface contract (API/CLI/data schemas),
   role roster, MR workflow, logging destination, comm channel, env vars, build shortcuts
 - CONSTITUTION.md: the common-core rules and the project-specific cycle limits
-- {supervisor}.md: authority, spawn procedure, per-role model policy, escalation chain
+- {supervisor}.md: authority, spawn procedure, model+effort enforcement (which path is in effect —
+  env-var-pinned uniform sub-agent model, or per-spawn/complexity-gated), one-cycle lifecycle +
+  `.{supervisor}_exit` sentinel, escalation chain
 Cross-check: the roles named in CLAUDE.md exist as docs under `docs/roles/`; the cycle limits
 in CONSTITUTION.md match what {supervisor}.md enforces.
 
