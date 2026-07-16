@@ -1,3 +1,9 @@
+---
+name: dark-forgery
+description: Bootstrap a complete dark factory project from a one-line idea. A dark factory is an autonomous multi-agent Claude Code system — a supervisor plus specialized agents (Engineer, QA, Designer) working with no human in the loop except escalations — governed by CLAUDE.md and CONSTITUTION.md. Guides discovery phases (scope, stack, execution environment, roles/models, comms, credentials, logging, auth), then generates the full project scaffold in one pass. Use when the user wants to forge, bootstrap, or scaffold a dark factory or autonomous agent project.
+argument-hint: <one-line idea>
+---
+
 # Dark Forgery
 
 **Dark Forgery** bootstraps a complete dark factory project from a raw idea.
