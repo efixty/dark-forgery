@@ -1,3 +1,9 @@
+---
+name: dark-forgery
+description: Bootstrap a complete dark factory project from a one-line idea. A dark factory is an autonomous multi-agent Claude Code system — a supervisor plus specialized agents (Engineer, QA, Designer) working with no human in the loop except escalations — governed by CLAUDE.md and CONSTITUTION.md. Guides discovery phases (scope, stack, execution environment, roles/models, comms, credentials, logging, auth), then generates the full project scaffold in one pass. Use when the user wants to forge, bootstrap, or scaffold a dark factory or autonomous agent project.
+argument-hint: <one-line idea>
+---
+
 # Dark Forgery
 
 **Dark Forgery** bootstraps a complete dark factory project from a raw idea.
@@ -16,7 +22,7 @@ then move to the next. If the user says "auto", "go ahead", "just do it", or sim
 any point — infer that they want you to complete all remaining phases without waiting for
 approval between them.
 
-**Never create files during the discovery phases (0–8).** Only generate files after all
+**Never create files during the discovery phases (0–9).** Only generate files after all
 phases are confirmed. Then generate everything in one pass.
 
 The argument `$ARGUMENTS` is the user's one-line idea. Use it as Phase 0 intake.
@@ -96,6 +102,44 @@ For Docker/remote, the entrypoint must:
    setup`, no poller, no loop. This is how the operator validates the environment before a
    real run: same preflight as the live boot, plus proof the governance docs and comm channel
    actually work, run once.
+
+#### Permissions posture
+
+A dark factory's agents need to run tools (bash, git, gh, file writes) without a human
+approving each one. There are two consistent ways to grant that, and the choice must be
+**explicit and overridable** — ask it, don't assume:
+
+- **Full autonomy (default) — `--dangerously-skip-permissions`.** The supervisor is launched
+  with this flag in the entrypoint and every sub-agent inherits it; no permission prompt ever
+  blocks a cycle. This is the right default for an **unattended headless loop**, because there
+  is no human to answer a prompt. Two hard consequences follow and the generation must honor
+  them:
+  - **Non-root container is required.** Claude Code refuses `--dangerously-skip-permissions`
+    when running as root, so a Docker/remote factory in this posture **must** run as a non-root
+    user (`useradd` in the Dockerfile + `--user $(id -u):$(id -g)` on `docker run`). State this
+    as the reason for the non-root user, not only the OAuth-mount UID reason.
+  - **`.claude/settings.json`'s allow list is inert at runtime.** The agents skip permissions
+    entirely, so the allow list governs nothing during autonomous runs — keep it only as a
+    convenience for a human who opens the repo interactively, and say so in a comment. Do not
+    imply it gates the factory.
+
+- **Allowlist — no skip.** The supervisor runs **without** the flag and `.claude/settings.json`'s
+  allow list actually governs every agent. This is the posture to choose when:
+  - the factory runs **interactively on a host** (a human is present to approve prompts, so the
+    skip flag is unnecessary and the allowlist is both usable and safer); **or**
+  - the Claude subscription / org policy **disables `--dangerously-skip-permissions`** (managed
+    tiers may forbid it — like the Phase 9 note that model availability is bounded by tier,
+    permission-skipping can be bounded too); **or**
+  - the operator wants a hard least-privilege boundary and will maintain the list.
+  The cost: in a headless loop the allow list must be **exhaustive** — any tool an agent needs
+  that is not listed blocks the cycle with no human to approve it. Enumerate every tool each
+  role uses, and document that adding a tool means updating this file.
+
+Record the chosen posture. It drives three generated artifacts consistently: the
+`--dangerously-skip-permissions` flag in the entrypoint (present for full-autonomy, absent for
+allowlist), the non-root user in the Dockerfile (required for full-autonomy), and whether
+`.claude/settings.json` is an exhaustive allow list or a human-only convenience. Document it in
+CLAUDE.md so a fresh agent knows which regime it is under.
 
 ---
 
@@ -218,9 +262,9 @@ removals from the base template and why.
 
 ## Group 3 — How does it operate?
 
-*Phases 6–8 cover the operational layer: how the supervisor talks to you, what secrets the
-project needs, and where work is tracked. Execution environment is already confirmed, so
-all three questions can be answered with full context.*
+*Phases 6–9 cover the operational layer: how the supervisor talks to you, what secrets the
+project needs, where work is tracked, and how the factory authenticates and is billed.
+Execution environment is already confirmed, so every question can be answered with full context.*
 
 ### Phase 6 — Communication channel
 
@@ -333,7 +377,13 @@ asking any questions?" If the answer is no, rewrite it until it is.
 
 ## Generation pass
 
-After all phases are confirmed, generate everything in one pass. Work in this order:
+After all phases are confirmed, generate everything in one pass. Work in this order.
+
+**Worked examples.** `examples/` in this skill holds complete, validated factories to model the
+output on — no two share an execution environment, logging destination, auth mode, or spawning
+model. `examples/feed-digester` is a Docker / OAuth / sequential factory; individual steps below
+link to its specific artifacts as concrete references. When an instruction is ambiguous, the
+example is the ground truth.
 
 ### 1. Git init and directory structure
 ```bash
@@ -355,16 +405,22 @@ __pycache__/
 *.pyc
 .DS_Store
 .{supervisor}_exit
+logs/
 ```
 `.{supervisor}_exit` is per-session runtime state (the supervisor's exit sentinel) — never commit it.
-Add build artifacts for the confirmed stack.
+`logs/` holds the per-cycle supervisor transcripts the entrypoint captures (see step 9) — runtime
+state, never committed. Add build artifacts for the confirmed stack.
 
 ### 3. `CONSTITUTION.md` — CRITICAL, write this carefully
 
 The CONSTITUTION has a **locked common core** (rules 1–13, identical across ALL dark factories)
-followed by project-specific additions. The common core is:
+followed by project-specific additions. The very first line is a **forge-version marker** — an
+HTML comment recording which revision of this skill forged the factory, so a live factory can
+later be diffed against an updated skill and upgraded. The common core is:
 
 ```markdown
+<!-- forged-by: dark-forgery @ {skill-version} -->
+
 # {Project Name} Agent Constitution
 
 Agents operating in this repository follow these rules unconditionally.
@@ -514,6 +570,13 @@ Each role doc must include:
 Role docs are the agent's operating manual. They must be complete enough that a fresh
 agent can work without any prior context beyond what's injected in the task brief.
 
+**A review role's doc must define its report format.** For QA (and any role that audits PRs),
+the "Output format" section must give the exact template the agent writes to `docs/qa/reports/`
+— one file per PR (`pr-{N}.md`), stating the spec it validated against, a PASS / CHANGES-REQUESTED
+result, the cycle number, a per-check results table, and any defects as input → expected → actual.
+Without a pinned format the audit trail is inconsistent and QA's "done" is undefined.
+See `examples/feed-digester/docs/roles/qa.md` for a worked QA report template.
+
 **The supervisor's role doc must additionally encode two things:**
 
 **(a) The Phase 4 model & effort policy**, in its "Spawning agents" section:
@@ -529,9 +592,16 @@ agent can work without any prior context beyond what's injected in the task brie
 **(b) One cycle per session (lifecycle & recovery).** The supervisor's session is disposable and
 handles at most one cycle; STATUS.md is the persistent memory. The role doc must state:
 - The exit-reason table: as its final action the supervisor writes one word to
-  `.{supervisor}_exit` — `completed` (ran/advanced/merged a cycle; more may be queued) or `idle`
-  (nothing actionable). A missing sentinel is treated as a crash. The entrypoint maps these to the
-  relaunch wait (completed → 90s, idle → 900s, crash/absent → 300s).
+  `.{supervisor}_exit` — `completed` (ran/advanced/merged a cycle; more may be queued), `idle`
+  (nothing actionable), or `done` (**v1 is complete** — every scope item shipped, backlog empty,
+  no open PRs). A missing sentinel is treated as a crash. The entrypoint maps these to the
+  relaunch wait (completed → 90s, idle → 900s, crash/absent → 300s) — except `done`, which stops
+  the factory: on `done` the supervisor also sends a final "{project} v1 complete" message to the
+  user, and the entrypoint exits its loop instead of relaunching.
+- **The `done` state operationalizes Phase 1's "definition of done."** Phase 1 asked what the
+  moment v1 ships looks like; `done` is how the factory reaches it and halts, rather than idling
+  forever. The role doc must spell out the exact condition that lets the supervisor write `done`,
+  derived from the project's definition of done.
 - The startup procedure, run once per session: read the board and any inbound human input once
   (never re-check comms mid-cycle) → send any un-sent blocked/needs-human Reasons → resume an
   in-flight PR by its `Phase`, else pick one backlog item → drive it to the next resting point →
@@ -539,7 +609,11 @@ handles at most one cycle; STATUS.md is the persistent memory. The role doc must
 
 ### 6. `STATUS.md` — initial board
 
-Pre-populate from Phase 1 discovery:
+Pre-populate from Phase 1 discovery. Don't just list features — **seed an ordered ladder** where
+each item builds on the previous one, so the factory's early cycles have a correct dependency
+order to follow (e.g. config → ingest → transform → render → deliver → schedule → edge-cases).
+A well-sequenced backlog is what makes the first autonomous cycles succeed instead of flailing;
+give each item a short slug and a one-line description of its acceptance bar.
 
 ```markdown
 # {Project Name} — Status
@@ -548,8 +622,9 @@ Pre-populate from Phase 1 discovery:
 *(none — factory not yet started)*
 
 ## Backlog
-- [ ] {first feature or component from Phase 1 scope}
-- [ ] {second feature}
+The ordered ladder — the supervisor takes the top unblocked item each cycle.
+- [ ] **{slug-1}** — {first capability; the foundation the rest builds on}
+- [ ] **{slug-2}** — {builds on slug-1}
 ...
 
 ## Completed
@@ -565,8 +640,34 @@ Pre-populate from Phase 1 discovery:
 ### 7. `Makefile`
 Build/test/setup targets for the confirmed stack. Always include `setup`, `build`, `test`.
 
+### 7b. Toolchain skeleton (code projects)
+
+Generate the language's **toolchain skeleton** so `make setup`, `make build`, and `make test`
+are real from the first cycle — a factory whose test target finds nothing gives the Engineer no
+green baseline to build against. The skeleton is:
+
+- **Package/module layout** for the stack — e.g. `src/{pkg}/__init__.py` (Python),
+  `cmd/{app}/main.go` + `go.mod` (Go), `src/main.rs` + `Cargo.toml` (Rust).
+- **Dependency manifest** — `requirements.txt` / `pyproject.toml`, `go.mod`, `Cargo.toml`.
+- **An entry-point stub that exits cleanly** — so `make run` (if applicable) works and prints a
+  clear "not implemented yet" line; it must not do product work.
+- **Exactly one smoke test** that asserts the package builds/imports — so `make test` passes on
+  a fresh clone.
+
+**Do NOT implement features, and do NOT materialize interface contracts as code.** The pipeline
+stages, endpoints, and data types are the backlog — building them is what the factory is FOR.
+Interface contracts live in `CLAUDE.md` as prose/schema (the `Item` schema, the CLI output shape,
+the API contract); the factory materializes them as code in its first cycles. The skeleton makes
+the toolchain runnable; it does not pre-build the product. Skip this step for a non-code project.
+
+**Worked reference:** `examples/feed-digester/pyproject.toml`, `src/feed_digester/`, and
+`tests/test_smoke.py` — an empty package, a clean-exit entry stub, and a single import smoke test.
+
 ### 8. `.claude/settings.json`
-Bash permissions for the scripts and tools used in this project:
+Bash permissions for the scripts and tools used in this project. **Its role depends on the
+Phase 3 permissions posture** (keep the two consistent — the entrypoint flag and this file must
+agree):
+
 ```json
 {
   "permissions": {
@@ -584,9 +685,24 @@ Bash permissions for the scripts and tools used in this project:
 }
 ```
 
+- **Full-autonomy posture (`--dangerously-skip-permissions`):** this allow list is **inert
+  during autonomous runs** — the agents skip permissions entirely. Still generate it as a
+  convenience for a human opening the repo interactively, but add a top-of-file note (a
+  `"_comment"` key) stating that the running factory does NOT rely on it. Do not make it
+  exhaustive; the entrypoint flag is what actually lets agents act.
+- **Allowlist posture (no skip):** this list is the **only** thing letting agents run tools, so
+  it must be **exhaustive** — every bash pattern, tool, and script every role invokes. A missing
+  entry blocks a headless cycle. Err toward completeness and document that new tools require an
+  edit here.
+
 If **parallel** agent spawning was chosen in Phase 4, add `"Bash(git worktree *)"` to the allow list. `git *` does not cover `git worktree` subcommands in Claude Code's permission model — it must be listed explicitly.
 
 ### 9. `scripts/{supervisor}_entrypoint.sh`
+
+The `claude` invocations below include `--dangerously-skip-permissions` because the template
+assumes the **full-autonomy** posture (Phase 3). If the **allowlist** posture was chosen (interactive
+host, org-restricted tier, or deliberate least-privilege), **remove that flag from every `claude`
+invocation** — the agents are then governed by `.claude/settings.json`, which must be exhaustive.
 
 For Docker/remote execution:
 ```bash
@@ -687,27 +803,58 @@ git config --global user.email "{user-email}"
 # Announce boot exactly once — not per cycle. Uses the confirmed comm channel; never fatal.
 scripts/{notify_script}.sh "factory online" || true
 
+CYCLE_TIMEOUT="${CYCLE_TIMEOUT:-1800}"   # hard cap on one supervisor cycle (s) — hang protection
+MAX_CRASHES="${MAX_CRASHES:-5}"          # consecutive failures before a single alert + long backoff
+LOG_DIR="logs"; mkdir -p "$LOG_DIR"
+CRASHES=0; CRASH_ALERTED=0
+
 while true; do
   rm -f .{supervisor}_exit
+  TS="$(date +%Y%m%d-%H%M%S)"; CYCLE_LOG="$LOG_DIR/cycle-$TS.log"
   CODE=0
-  claude --model {supervisor-model} --effort {supervisor-effort} --dangerously-skip-permissions -p \
+
+  # `timeout` is hang protection: a wedged session (exit 124) can never stall the factory
+  # forever. `tee` captures a per-cycle transcript for postmortems.
+  timeout "$CYCLE_TIMEOUT" \
+    claude --model {supervisor-model} --effort {supervisor-effort} --dangerously-skip-permissions -p \
     "$(cat scripts/{supervisor}_prompt.md)
 
 Current factory state (STATUS.md):
-$(cat STATUS.md)" || CODE=$?
+$(cat STATUS.md)" > >(tee "$CYCLE_LOG") 2>&1 || CODE=$?
 
-  # The supervisor's last action is to write one word to .{supervisor}_exit. Absent = crash.
+  # The supervisor's last action is to write one word to .{supervisor}_exit. Absent = crash;
+  # exit 124 = the timeout fired.
   REASON="crash"
-  if [ -f .{supervisor}_exit ]; then
+  if [ "$CODE" = "124" ]; then
+    REASON="timeout"
+  elif [ -f .{supervisor}_exit ]; then
     REASON="$(tr -d '[:space:]' < .{supervisor}_exit)"   # tolerate a trailing newline
     rm -f .{supervisor}_exit
   fi
+
   case "$REASON" in
-    completed) WAIT=90  ;;   # advanced a cycle; more may be queued — relaunch soon
-    idle)      WAIT=900 ;;   # nothing actionable — stay quiet ~15 min
-    *)         WAIT=300 ;;   # crashed/overflowed before writing the sentinel — backoff
+    done)                                     # v1 complete — stop the factory
+      echo "{Supervisor} reported v1 complete at $(date). Factory stopping."
+      scripts/{notify_script}.sh "{project} v1 complete — factory stopped." || true
+      exit 0 ;;
+    completed) WAIT=90;  CRASHES=0; CRASH_ALERTED=0 ;;   # advanced a cycle — relaunch soon
+    idle)      WAIT=900; CRASHES=0; CRASH_ALERTED=0 ;;   # nothing actionable — stay quiet ~15 min
+    timeout)   WAIT=300; CRASHES=$((CRASHES + 1)) ;;     # wedged session — backoff + count
+    *)         WAIT=300; CRASHES=$((CRASHES + 1)) ;;     # crashed before the sentinel — backoff + count
   esac
-  echo "{Supervisor} exited (reason=$REASON, code=$CODE) at $(date) — next session in ${WAIT}s..."
+
+  # Crash-loop protection: after MAX_CRASHES in a row, alert the user ONCE and back off hard.
+  # This is what surfaces an expired OAuth token / wedged host instead of failing silently forever.
+  if [ "$CRASHES" -ge "$MAX_CRASHES" ]; then
+    if [ "$CRASH_ALERTED" = "0" ]; then
+      scripts/{notify_script}.sh \
+        "{project}: $CRASHES consecutive failed cycles (last reason=$REASON). Likely expired auth or a wedged environment — check the host. Backing off to 1h." || true
+      CRASH_ALERTED=1
+    fi
+    WAIT=3600
+  fi
+
+  echo "{Supervisor} exited (reason=$REASON, code=$CODE, crashes=$CRASHES) at $(date) — log: $CYCLE_LOG — next in ${WAIT}s..."
   sleep "$WAIT"
 done
 ```
@@ -715,13 +862,67 @@ done
 Each loop iteration is one disposable supervisor session that handles a single cycle and exits;
 the `.{supervisor}_exit` sentinel it writes drives the relaunch wait. The `|| CODE=$?` guard is
 required because `set -e` is active — without it a crashing session would kill the whole loop
-instead of falling through to the 300s backoff. `{supervisor-model}` and `{supervisor-effort}`
-are the values confirmed in Phase 4 (suggested defaults: `sonnet` / `high`); the sub-agent model
-is enforced separately (the `CLAUDE_CODE_SUBAGENT_MODEL` export above for a uniform policy, or the
-supervisor's per-spawn choice otherwise). The `completed` (90s) and `idle` (900s) waits are the
-two tunable throughput/quiet knobs.
+instead of falling through to the backoff. Four mechanisms make the loop survivable unattended:
 
-For host machine execution, a simpler version without preflight and Docker patterns.
+- **Hang protection** — `timeout $CYCLE_TIMEOUT` bounds every cycle; a wedged session exits 124
+  and is treated as a `timeout` (backoff + crash count), never an infinite stall.
+- **Per-cycle logs** — each session's transcript is tee'd to `logs/cycle-{ts}.log` (gitignored)
+  so a bad cycle can be diagnosed after the fact.
+- **Crash-loop alert** — `MAX_CRASHES` consecutive failures (crash or timeout) sends the user
+  **one** notification and backs off to 1h. This is what surfaces an expired OAuth token instead
+  of a silent 300s loop forever. A `completed`/`idle` cycle resets the counter.
+- **`done` halts the factory** — the supervisor's `done` sentinel (v1 complete) sends a final
+  message and exits the loop rather than relaunching.
+
+`{supervisor-model}` and `{supervisor-effort}` are the Phase 4 values (defaults `sonnet` /
+`high`); the sub-agent model is enforced separately (the `CLAUDE_CODE_SUBAGENT_MODEL` export above
+for a uniform policy, or the supervisor's per-spawn choice otherwise). The `completed` (90s),
+`idle` (900s), `CYCLE_TIMEOUT`, and `MAX_CRASHES` values are the tunable knobs.
+
+For host machine execution, a simpler version without the preflight and Docker patterns — but
+keep the hang protection, per-cycle logs, crash-loop alert, and `done` handling; those are not
+Docker-specific.
+
+**Worked reference:** `examples/feed-digester/scripts/editor_entrypoint.sh` is a complete
+Docker/OAuth entrypoint implementing every mechanism above.
+
+### 9b. `Dockerfile` (Docker/remote execution only)
+
+If Phase 3 chose Docker or remote execution, generate a `Dockerfile` — the entrypoint,
+`docker run`, and `--check` instructions all assume an image exists, so a factory without one
+is incomplete. Skip this step only for host-machine execution.
+
+The image bakes in **only the factory bootstrap**, not the project source — the entrypoint
+clones the real repo on first boot. It must provide:
+1. A base image for the confirmed stack (e.g. `python:3.11-slim`, `golang:1.23`, `rust:1.81`).
+2. The runtime tools the entrypoint preflight checks for: `git`, `gh` (GitHub CLI), `make`,
+   and the **Claude Code CLI** (`curl -fsSL https://claude.ai/install.sh | bash`).
+3. A **non-root user** whose UID matches the host. This is required for **two** reasons: (a)
+   under the full-autonomy posture, Claude Code refuses `--dangerously-skip-permissions` as root
+   (Phase 3), so a root container simply cannot run the factory; and (b) a volume-mounted OAuth
+   `~/.claude` dir is owned correctly (Phase 9). For OAuth factories this pairs with
+   `--user $(id -u):$(id -g)` on `docker run`. Never run the full-autonomy factory as root.
+4. `COPY` of the entrypoint script and `ENTRYPOINT` pointing at it.
+
+```dockerfile
+FROM {stack-base-image}
+RUN {install git, gh, make for the base distro}
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && ln -sf /root/.local/bin/claude /usr/local/bin/claude || true
+RUN useradd -m -u 1000 {container-user}
+USER {container-user}
+WORKDIR /app
+COPY --chown={container-user}:{container-user} scripts/{supervisor}_entrypoint.sh /app/scripts/{supervisor}_entrypoint.sh
+RUN chmod +x /app/scripts/{supervisor}_entrypoint.sh
+ENTRYPOINT ["/app/scripts/{supervisor}_entrypoint.sh"]
+```
+
+For API-key factories the non-root/UID concern is moot (no mounted config dir), but a non-root
+user is still good practice. For **remote (non-Docker)** execution, no Dockerfile is generated —
+document the equivalent host provisioning (install the same tools, set up the OAuth/API-key auth)
+in `docs/environment.md` instead.
+
+**Worked reference:** `examples/feed-digester/Dockerfile` (Python + OAuth, non-root `factory` user).
 
 ### 10. `scripts/{supervisor}_prompt.md`
 
@@ -755,6 +956,8 @@ Handle exactly ONE cycle. Do NOT loop into a second task.
 MANDATORY LAST ACTION: write a single word to `.{supervisor}_exit`, then STOP immediately:
 - `completed` — you ran, advanced, or merged a cycle (more work may be queued)
 - `idle` — nothing was actionable (empty backlog, or every PR is blocked on {user})
+- `done` — v1 is complete: every backlog item shipped, no open PRs, the project meets its
+  definition of done. Before you exit, send a "{project} v1 complete" message to {user}.
 Do not start another task after writing it. A missing sentinel is treated as a crash.
 
 You are running autonomously. Do not wait for confirmation before reading docs.

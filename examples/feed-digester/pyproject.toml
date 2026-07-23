@@ -1,0 +1,13 @@
+[project]
+name = "feed-digester"
+version = "0.1.0"
+description = "RSS/newsletter to daily briefing — a dark factory example project"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
