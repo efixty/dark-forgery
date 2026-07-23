@@ -103,6 +103,21 @@ clustering:
 
 Report chain: Engineer/QA → Editor → user (via Telegram). Only the Editor talks to the user.
 
+## Permissions posture
+
+**Full autonomy.** The entrypoint launches the Editor with `--dangerously-skip-permissions` and
+every sub-agent inherits it, so no permission prompt can block an unattended cycle. Two
+consequences hold:
+- The container **must** run as a non-root user (`factory`, UID 1000) — Claude Code refuses
+  `--dangerously-skip-permissions` as root. This is enforced in the `Dockerfile` and by
+  `--user $(id -u):$(id -g)` on `docker run`.
+- `.claude/settings.json`'s allow list is **inert during autonomous runs**; it exists only for a
+  human opening the repo interactively. The running factory does not rely on it.
+
+To run instead under the **allowlist** posture (e.g. interactive on a host, or an org tier that
+disables the skip flag): remove `--dangerously-skip-permissions` from every `claude` call in
+`scripts/editor_entrypoint.sh` and make `.claude/settings.json`'s allow list exhaustive.
+
 ## Model & effort policy
 
 - **Editor (supervisor):** `--model sonnet --effort high`, pinned on the `claude -p`

@@ -1,4 +1,5 @@
 {
+  "_comment": "Permissions posture: FULL AUTONOMY. The running factory launches the Editor with --dangerously-skip-permissions (see scripts/editor_entrypoint.sh), so this allow list does NOT govern the autonomous agents — it is only a convenience for a human who opens this repo in interactive Claude Code. The non-root container user (Dockerfile) is what makes skip-permissions possible. To switch to the allowlist posture, drop that flag from the entrypoint and make this list exhaustive.",
   "permissions": {
     "allow": [
       "Bash(make *)",

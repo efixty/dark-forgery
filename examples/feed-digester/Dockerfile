@@ -16,7 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://claude.ai/install.sh | bash \
  && ln -sf /root/.local/bin/claude /usr/local/bin/claude || true
 
-# Non-root user so the mounted OAuth dir can be owned by the host UID (see CLAUDE.md "How to run").
+# Non-root user — required for TWO reasons:
+#   1. Full-autonomy posture: Claude Code refuses --dangerously-skip-permissions as root, and the
+#      entrypoint launches the Editor with that flag, so a root container cannot run the factory.
+#   2. The mounted OAuth dir is owned by the host UID (see CLAUDE.md "How to run" / Permissions posture).
 RUN useradd -m -u 1000 factory
 USER factory
 WORKDIR /app

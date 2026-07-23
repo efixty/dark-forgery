@@ -103,6 +103,44 @@ For Docker/remote, the entrypoint must:
    real run: same preflight as the live boot, plus proof the governance docs and comm channel
    actually work, run once.
 
+#### Permissions posture
+
+A dark factory's agents need to run tools (bash, git, gh, file writes) without a human
+approving each one. There are two consistent ways to grant that, and the choice must be
+**explicit and overridable** — ask it, don't assume:
+
+- **Full autonomy (default) — `--dangerously-skip-permissions`.** The supervisor is launched
+  with this flag in the entrypoint and every sub-agent inherits it; no permission prompt ever
+  blocks a cycle. This is the right default for an **unattended headless loop**, because there
+  is no human to answer a prompt. Two hard consequences follow and the generation must honor
+  them:
+  - **Non-root container is required.** Claude Code refuses `--dangerously-skip-permissions`
+    when running as root, so a Docker/remote factory in this posture **must** run as a non-root
+    user (`useradd` in the Dockerfile + `--user $(id -u):$(id -g)` on `docker run`). State this
+    as the reason for the non-root user, not only the OAuth-mount UID reason.
+  - **`.claude/settings.json`'s allow list is inert at runtime.** The agents skip permissions
+    entirely, so the allow list governs nothing during autonomous runs — keep it only as a
+    convenience for a human who opens the repo interactively, and say so in a comment. Do not
+    imply it gates the factory.
+
+- **Allowlist — no skip.** The supervisor runs **without** the flag and `.claude/settings.json`'s
+  allow list actually governs every agent. This is the posture to choose when:
+  - the factory runs **interactively on a host** (a human is present to approve prompts, so the
+    skip flag is unnecessary and the allowlist is both usable and safer); **or**
+  - the Claude subscription / org policy **disables `--dangerously-skip-permissions`** (managed
+    tiers may forbid it — like the Phase 9 note that model availability is bounded by tier,
+    permission-skipping can be bounded too); **or**
+  - the operator wants a hard least-privilege boundary and will maintain the list.
+  The cost: in a headless loop the allow list must be **exhaustive** — any tool an agent needs
+  that is not listed blocks the cycle with no human to approve it. Enumerate every tool each
+  role uses, and document that adding a tool means updating this file.
+
+Record the chosen posture. It drives three generated artifacts consistently: the
+`--dangerously-skip-permissions` flag in the entrypoint (present for full-autonomy, absent for
+allowlist), the non-root user in the Dockerfile (required for full-autonomy), and whether
+`.claude/settings.json` is an exhaustive allow list or a human-only convenience. Document it in
+CLAUDE.md so a fresh agent knows which regime it is under.
+
 ---
 
 ## Group 2 — Who's working on it?
@@ -626,7 +664,10 @@ the toolchain runnable; it does not pre-build the product. Skip this step for a 
 `tests/test_smoke.py` — an empty package, a clean-exit entry stub, and a single import smoke test.
 
 ### 8. `.claude/settings.json`
-Bash permissions for the scripts and tools used in this project:
+Bash permissions for the scripts and tools used in this project. **Its role depends on the
+Phase 3 permissions posture** (keep the two consistent — the entrypoint flag and this file must
+agree):
+
 ```json
 {
   "permissions": {
@@ -644,9 +685,24 @@ Bash permissions for the scripts and tools used in this project:
 }
 ```
 
+- **Full-autonomy posture (`--dangerously-skip-permissions`):** this allow list is **inert
+  during autonomous runs** — the agents skip permissions entirely. Still generate it as a
+  convenience for a human opening the repo interactively, but add a top-of-file note (a
+  `"_comment"` key) stating that the running factory does NOT rely on it. Do not make it
+  exhaustive; the entrypoint flag is what actually lets agents act.
+- **Allowlist posture (no skip):** this list is the **only** thing letting agents run tools, so
+  it must be **exhaustive** — every bash pattern, tool, and script every role invokes. A missing
+  entry blocks a headless cycle. Err toward completeness and document that new tools require an
+  edit here.
+
 If **parallel** agent spawning was chosen in Phase 4, add `"Bash(git worktree *)"` to the allow list. `git *` does not cover `git worktree` subcommands in Claude Code's permission model — it must be listed explicitly.
 
 ### 9. `scripts/{supervisor}_entrypoint.sh`
+
+The `claude` invocations below include `--dangerously-skip-permissions` because the template
+assumes the **full-autonomy** posture (Phase 3). If the **allowlist** posture was chosen (interactive
+host, org-restricted tier, or deliberate least-privilege), **remove that flag from every `claude`
+invocation** — the agents are then governed by `.claude/settings.json`, which must be exhaustive.
 
 For Docker/remote execution:
 ```bash
@@ -841,9 +897,11 @@ clones the real repo on first boot. It must provide:
 1. A base image for the confirmed stack (e.g. `python:3.11-slim`, `golang:1.23`, `rust:1.81`).
 2. The runtime tools the entrypoint preflight checks for: `git`, `gh` (GitHub CLI), `make`,
    and the **Claude Code CLI** (`curl -fsSL https://claude.ai/install.sh | bash`).
-3. A **non-root user** whose UID matches the host (so a volume-mounted OAuth `~/.claude` dir is
-   owned correctly — see Phase 9). For OAuth factories this pairs with
-   `--user $(id -u):$(id -g)` on `docker run`.
+3. A **non-root user** whose UID matches the host. This is required for **two** reasons: (a)
+   under the full-autonomy posture, Claude Code refuses `--dangerously-skip-permissions` as root
+   (Phase 3), so a root container simply cannot run the factory; and (b) a volume-mounted OAuth
+   `~/.claude` dir is owned correctly (Phase 9). For OAuth factories this pairs with
+   `--user $(id -u):$(id -g)` on `docker run`. Never run the full-autonomy factory as root.
 4. `COPY` of the entrypoint script and `ENTRYPOINT` pointing at it.
 
 ```dockerfile

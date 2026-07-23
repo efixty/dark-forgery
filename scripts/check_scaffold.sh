@@ -152,18 +152,43 @@ fi
 # ── 6. .claude/settings.json ─────────────────────────────────────────────────
 if [ -f "$P/.claude/settings.json" ]; then
   if command -v python3 > /dev/null 2>&1; then
-    if python3 -c "
-import json, sys
-d = json.load(open('$P/.claude/settings.json'))
-allow = d.get('permissions', {}).get('allow', [])
-sys.exit(0 if isinstance(allow, list) and allow else 1)
-" 2>/dev/null; then
-      ok ".claude/settings.json is valid JSON with a non-empty permissions.allow"
+    if python3 -c "import json,sys; json.load(open('$P/.claude/settings.json'))" 2>/dev/null; then
+      ok ".claude/settings.json is valid JSON"
     else
-      fail ".claude/settings.json is invalid JSON or has no permissions.allow entries"
+      fail ".claude/settings.json is invalid JSON"
     fi
   else
     warn "python3 not available — skipped settings.json JSON validation"
+  fi
+fi
+
+# ── 6b. Permissions posture consistency (Phase 3) ────────────────────────────
+# The entrypoint flag, the settings allow list, and the Dockerfile user must agree.
+if [ -n "$ENTRYPOINT" ]; then
+  if grep -q 'dangerously-skip-permissions' "$ENTRYPOINT"; then
+    # Full-autonomy posture: allow list is inert (ok if minimal/empty), but a Docker factory
+    # MUST run non-root — Claude Code refuses --dangerously-skip-permissions as root.
+    ok "posture: full-autonomy (--dangerously-skip-permissions)"
+    if [ -f "$P/Dockerfile" ]; then
+      if grep -qE '^\s*USER\s+' "$P/Dockerfile" && ! grep -qE '^\s*USER\s+root\s*$' "$P/Dockerfile"; then
+        ok "Dockerfile runs as a non-root USER (required for skip-permissions)"
+      else
+        fail "full-autonomy posture but Dockerfile has no non-root USER — Claude Code refuses --dangerously-skip-permissions as root"
+      fi
+    fi
+  else
+    # Allowlist posture: the allow list is the only thing letting agents act — must be non-empty.
+    ok "posture: allowlist (no --dangerously-skip-permissions)"
+    if [ -f "$P/.claude/settings.json" ] && command -v python3 > /dev/null 2>&1; then
+      if python3 -c "
+import json,sys
+allow=json.load(open('$P/.claude/settings.json')).get('permissions',{}).get('allow',[])
+sys.exit(0 if isinstance(allow,list) and allow else 1)" 2>/dev/null; then
+        ok "allowlist posture: permissions.allow is non-empty"
+      else
+        fail "allowlist posture (no skip flag) but permissions.allow is empty — agents will block on every tool"
+      fi
+    fi
   fi
 fi
 
