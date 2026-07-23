@@ -129,10 +129,12 @@ $MD_FILES
 EOF
 [ "$PATH_FAILS" -eq 0 ] && ok "all backtick-quoted references/ and examples/ paths exist"
 
-# ── 6. Orphaned reference/example files ──────────────────────────────────────
+# ── 6. Orphaned reference files ──────────────────────────────────────────────
+# Only references/ files are link-targets that must be reached from the docs. Example
+# scaffolds are self-contained factories: SKILL.md links a few key artifacts as concrete
+# references, but the bulk of an example is not expected to have an inbound link.
 ORPHANS=0
-for dir in references examples; do
-  [ -d "$ROOT/$dir" ] || continue
+if [ -d "$ROOT/references" ]; then
   while IFS= read -r f; do
     [ -z "$f" ] && continue
     rel="${f#$ROOT/}"
@@ -141,10 +143,10 @@ for dir in references examples; do
       ORPHANS=$((ORPHANS + 1))
     fi
   done <<EOF
-$(find "$ROOT/$dir" -name '*.md' -type f 2>/dev/null)
+$(find "$ROOT/references" -name '*.md' -type f 2>/dev/null)
 EOF
-done
-[ "$ORPHANS" -eq 0 ] && ok "no orphaned files under references/ or examples/"
+fi
+[ "$ORPHANS" -eq 0 ] && ok "no orphaned files under references/"
 
 # ── 7. SKILL.md line budget ──────────────────────────────────────────────────
 LINES="$(wc -l < "$SKILL" | tr -d ' ')"

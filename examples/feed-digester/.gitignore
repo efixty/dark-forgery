@@ -10,3 +10,4 @@ build/
 .editor_exit
 logs/
 archive/
+.pytest_cache/

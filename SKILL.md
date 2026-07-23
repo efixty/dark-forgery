@@ -339,7 +339,13 @@ asking any questions?" If the answer is no, rewrite it until it is.
 
 ## Generation pass
 
-After all phases are confirmed, generate everything in one pass. Work in this order:
+After all phases are confirmed, generate everything in one pass. Work in this order.
+
+**Worked examples.** `examples/` in this skill holds complete, validated factories to model the
+output on — no two share an execution environment, logging destination, auth mode, or spawning
+model. `examples/feed-digester` is a Docker / OAuth / sequential factory; individual steps below
+link to its specific artifacts as concrete references. When an instruction is ambiguous, the
+example is the ground truth.
 
 ### 1. Git init and directory structure
 ```bash
@@ -361,16 +367,22 @@ __pycache__/
 *.pyc
 .DS_Store
 .{supervisor}_exit
+logs/
 ```
 `.{supervisor}_exit` is per-session runtime state (the supervisor's exit sentinel) — never commit it.
-Add build artifacts for the confirmed stack.
+`logs/` holds the per-cycle supervisor transcripts the entrypoint captures (see step 9) — runtime
+state, never committed. Add build artifacts for the confirmed stack.
 
 ### 3. `CONSTITUTION.md` — CRITICAL, write this carefully
 
 The CONSTITUTION has a **locked common core** (rules 1–13, identical across ALL dark factories)
-followed by project-specific additions. The common core is:
+followed by project-specific additions. The very first line is a **forge-version marker** — an
+HTML comment recording which revision of this skill forged the factory, so a live factory can
+later be diffed against an updated skill and upgraded. The common core is:
 
 ```markdown
+<!-- forged-by: dark-forgery @ {skill-version} -->
+
 # {Project Name} Agent Constitution
 
 Agents operating in this repository follow these rules unconditionally.
@@ -520,6 +532,13 @@ Each role doc must include:
 Role docs are the agent's operating manual. They must be complete enough that a fresh
 agent can work without any prior context beyond what's injected in the task brief.
 
+**A review role's doc must define its report format.** For QA (and any role that audits PRs),
+the "Output format" section must give the exact template the agent writes to `docs/qa/reports/`
+— one file per PR (`pr-{N}.md`), stating the spec it validated against, a PASS / CHANGES-REQUESTED
+result, the cycle number, a per-check results table, and any defects as input → expected → actual.
+Without a pinned format the audit trail is inconsistent and QA's "done" is undefined.
+See `examples/feed-digester/docs/roles/qa.md` for a worked QA report template.
+
 **The supervisor's role doc must additionally encode two things:**
 
 **(a) The Phase 4 model & effort policy**, in its "Spawning agents" section:
@@ -535,9 +554,16 @@ agent can work without any prior context beyond what's injected in the task brie
 **(b) One cycle per session (lifecycle & recovery).** The supervisor's session is disposable and
 handles at most one cycle; STATUS.md is the persistent memory. The role doc must state:
 - The exit-reason table: as its final action the supervisor writes one word to
-  `.{supervisor}_exit` — `completed` (ran/advanced/merged a cycle; more may be queued) or `idle`
-  (nothing actionable). A missing sentinel is treated as a crash. The entrypoint maps these to the
-  relaunch wait (completed → 90s, idle → 900s, crash/absent → 300s).
+  `.{supervisor}_exit` — `completed` (ran/advanced/merged a cycle; more may be queued), `idle`
+  (nothing actionable), or `done` (**v1 is complete** — every scope item shipped, backlog empty,
+  no open PRs). A missing sentinel is treated as a crash. The entrypoint maps these to the
+  relaunch wait (completed → 90s, idle → 900s, crash/absent → 300s) — except `done`, which stops
+  the factory: on `done` the supervisor also sends a final "{project} v1 complete" message to the
+  user, and the entrypoint exits its loop instead of relaunching.
+- **The `done` state operationalizes Phase 1's "definition of done."** Phase 1 asked what the
+  moment v1 ships looks like; `done` is how the factory reaches it and halts, rather than idling
+  forever. The role doc must spell out the exact condition that lets the supervisor write `done`,
+  derived from the project's definition of done.
 - The startup procedure, run once per session: read the board and any inbound human input once
   (never re-check comms mid-cycle) → send any un-sent blocked/needs-human Reasons → resume an
   in-flight PR by its `Phase`, else pick one backlog item → drive it to the next resting point →
@@ -693,27 +719,58 @@ git config --global user.email "{user-email}"
 # Announce boot exactly once — not per cycle. Uses the confirmed comm channel; never fatal.
 scripts/{notify_script}.sh "factory online" || true
 
+CYCLE_TIMEOUT="${CYCLE_TIMEOUT:-1800}"   # hard cap on one supervisor cycle (s) — hang protection
+MAX_CRASHES="${MAX_CRASHES:-5}"          # consecutive failures before a single alert + long backoff
+LOG_DIR="logs"; mkdir -p "$LOG_DIR"
+CRASHES=0; CRASH_ALERTED=0
+
 while true; do
   rm -f .{supervisor}_exit
+  TS="$(date +%Y%m%d-%H%M%S)"; CYCLE_LOG="$LOG_DIR/cycle-$TS.log"
   CODE=0
-  claude --model {supervisor-model} --effort {supervisor-effort} --dangerously-skip-permissions -p \
+
+  # `timeout` is hang protection: a wedged session (exit 124) can never stall the factory
+  # forever. `tee` captures a per-cycle transcript for postmortems.
+  timeout "$CYCLE_TIMEOUT" \
+    claude --model {supervisor-model} --effort {supervisor-effort} --dangerously-skip-permissions -p \
     "$(cat scripts/{supervisor}_prompt.md)
 
 Current factory state (STATUS.md):
-$(cat STATUS.md)" || CODE=$?
+$(cat STATUS.md)" > >(tee "$CYCLE_LOG") 2>&1 || CODE=$?
 
-  # The supervisor's last action is to write one word to .{supervisor}_exit. Absent = crash.
+  # The supervisor's last action is to write one word to .{supervisor}_exit. Absent = crash;
+  # exit 124 = the timeout fired.
   REASON="crash"
-  if [ -f .{supervisor}_exit ]; then
+  if [ "$CODE" = "124" ]; then
+    REASON="timeout"
+  elif [ -f .{supervisor}_exit ]; then
     REASON="$(tr -d '[:space:]' < .{supervisor}_exit)"   # tolerate a trailing newline
     rm -f .{supervisor}_exit
   fi
+
   case "$REASON" in
-    completed) WAIT=90  ;;   # advanced a cycle; more may be queued — relaunch soon
-    idle)      WAIT=900 ;;   # nothing actionable — stay quiet ~15 min
-    *)         WAIT=300 ;;   # crashed/overflowed before writing the sentinel — backoff
+    done)                                     # v1 complete — stop the factory
+      echo "{Supervisor} reported v1 complete at $(date). Factory stopping."
+      scripts/{notify_script}.sh "{project} v1 complete — factory stopped." || true
+      exit 0 ;;
+    completed) WAIT=90;  CRASHES=0; CRASH_ALERTED=0 ;;   # advanced a cycle — relaunch soon
+    idle)      WAIT=900; CRASHES=0; CRASH_ALERTED=0 ;;   # nothing actionable — stay quiet ~15 min
+    timeout)   WAIT=300; CRASHES=$((CRASHES + 1)) ;;     # wedged session — backoff + count
+    *)         WAIT=300; CRASHES=$((CRASHES + 1)) ;;     # crashed before the sentinel — backoff + count
   esac
-  echo "{Supervisor} exited (reason=$REASON, code=$CODE) at $(date) — next session in ${WAIT}s..."
+
+  # Crash-loop protection: after MAX_CRASHES in a row, alert the user ONCE and back off hard.
+  # This is what surfaces an expired OAuth token / wedged host instead of failing silently forever.
+  if [ "$CRASHES" -ge "$MAX_CRASHES" ]; then
+    if [ "$CRASH_ALERTED" = "0" ]; then
+      scripts/{notify_script}.sh \
+        "{project}: $CRASHES consecutive failed cycles (last reason=$REASON). Likely expired auth or a wedged environment — check the host. Backing off to 1h." || true
+      CRASH_ALERTED=1
+    fi
+    WAIT=3600
+  fi
+
+  echo "{Supervisor} exited (reason=$REASON, code=$CODE, crashes=$CRASHES) at $(date) — log: $CYCLE_LOG — next in ${WAIT}s..."
   sleep "$WAIT"
 done
 ```
@@ -721,13 +778,65 @@ done
 Each loop iteration is one disposable supervisor session that handles a single cycle and exits;
 the `.{supervisor}_exit` sentinel it writes drives the relaunch wait. The `|| CODE=$?` guard is
 required because `set -e` is active — without it a crashing session would kill the whole loop
-instead of falling through to the 300s backoff. `{supervisor-model}` and `{supervisor-effort}`
-are the values confirmed in Phase 4 (suggested defaults: `sonnet` / `high`); the sub-agent model
-is enforced separately (the `CLAUDE_CODE_SUBAGENT_MODEL` export above for a uniform policy, or the
-supervisor's per-spawn choice otherwise). The `completed` (90s) and `idle` (900s) waits are the
-two tunable throughput/quiet knobs.
+instead of falling through to the backoff. Four mechanisms make the loop survivable unattended:
 
-For host machine execution, a simpler version without preflight and Docker patterns.
+- **Hang protection** — `timeout $CYCLE_TIMEOUT` bounds every cycle; a wedged session exits 124
+  and is treated as a `timeout` (backoff + crash count), never an infinite stall.
+- **Per-cycle logs** — each session's transcript is tee'd to `logs/cycle-{ts}.log` (gitignored)
+  so a bad cycle can be diagnosed after the fact.
+- **Crash-loop alert** — `MAX_CRASHES` consecutive failures (crash or timeout) sends the user
+  **one** notification and backs off to 1h. This is what surfaces an expired OAuth token instead
+  of a silent 300s loop forever. A `completed`/`idle` cycle resets the counter.
+- **`done` halts the factory** — the supervisor's `done` sentinel (v1 complete) sends a final
+  message and exits the loop rather than relaunching.
+
+`{supervisor-model}` and `{supervisor-effort}` are the Phase 4 values (defaults `sonnet` /
+`high`); the sub-agent model is enforced separately (the `CLAUDE_CODE_SUBAGENT_MODEL` export above
+for a uniform policy, or the supervisor's per-spawn choice otherwise). The `completed` (90s),
+`idle` (900s), `CYCLE_TIMEOUT`, and `MAX_CRASHES` values are the tunable knobs.
+
+For host machine execution, a simpler version without the preflight and Docker patterns — but
+keep the hang protection, per-cycle logs, crash-loop alert, and `done` handling; those are not
+Docker-specific.
+
+**Worked reference:** `examples/feed-digester/scripts/editor_entrypoint.sh` is a complete
+Docker/OAuth entrypoint implementing every mechanism above.
+
+### 9b. `Dockerfile` (Docker/remote execution only)
+
+If Phase 3 chose Docker or remote execution, generate a `Dockerfile` — the entrypoint,
+`docker run`, and `--check` instructions all assume an image exists, so a factory without one
+is incomplete. Skip this step only for host-machine execution.
+
+The image bakes in **only the factory bootstrap**, not the project source — the entrypoint
+clones the real repo on first boot. It must provide:
+1. A base image for the confirmed stack (e.g. `python:3.11-slim`, `golang:1.23`, `rust:1.81`).
+2. The runtime tools the entrypoint preflight checks for: `git`, `gh` (GitHub CLI), `make`,
+   and the **Claude Code CLI** (`curl -fsSL https://claude.ai/install.sh | bash`).
+3. A **non-root user** whose UID matches the host (so a volume-mounted OAuth `~/.claude` dir is
+   owned correctly — see Phase 9). For OAuth factories this pairs with
+   `--user $(id -u):$(id -g)` on `docker run`.
+4. `COPY` of the entrypoint script and `ENTRYPOINT` pointing at it.
+
+```dockerfile
+FROM {stack-base-image}
+RUN {install git, gh, make for the base distro}
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && ln -sf /root/.local/bin/claude /usr/local/bin/claude || true
+RUN useradd -m -u 1000 {container-user}
+USER {container-user}
+WORKDIR /app
+COPY --chown={container-user}:{container-user} scripts/{supervisor}_entrypoint.sh /app/scripts/{supervisor}_entrypoint.sh
+RUN chmod +x /app/scripts/{supervisor}_entrypoint.sh
+ENTRYPOINT ["/app/scripts/{supervisor}_entrypoint.sh"]
+```
+
+For API-key factories the non-root/UID concern is moot (no mounted config dir), but a non-root
+user is still good practice. For **remote (non-Docker)** execution, no Dockerfile is generated —
+document the equivalent host provisioning (install the same tools, set up the OAuth/API-key auth)
+in `docs/environment.md` instead.
+
+**Worked reference:** `examples/feed-digester/Dockerfile` (Python + OAuth, non-root `factory` user).
 
 ### 10. `scripts/{supervisor}_prompt.md`
 
@@ -761,6 +870,8 @@ Handle exactly ONE cycle. Do NOT loop into a second task.
 MANDATORY LAST ACTION: write a single word to `.{supervisor}_exit`, then STOP immediately:
 - `completed` — you ran, advanced, or merged a cycle (more work may be queued)
 - `idle` — nothing was actionable (empty backlog, or every PR is blocked on {user})
+- `done` — v1 is complete: every backlog item shipped, no open PRs, the project meets its
+  definition of done. Before you exit, send a "{project} v1 complete" message to {user}.
 Do not start another task after writing it. A missing sentinel is treated as a crash.
 
 You are running autonomously. Do not wait for confirmation before reading docs.
