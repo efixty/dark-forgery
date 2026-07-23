@@ -22,7 +22,7 @@ then move to the next. If the user says "auto", "go ahead", "just do it", or sim
 any point — infer that they want you to complete all remaining phases without waiting for
 approval between them.
 
-**Never create files during the discovery phases (0–8).** Only generate files after all
+**Never create files during the discovery phases (0–9).** Only generate files after all
 phases are confirmed. Then generate everything in one pass.
 
 The argument `$ARGUMENTS` is the user's one-line idea. Use it as Phase 0 intake.
@@ -224,9 +224,9 @@ removals from the base template and why.
 
 ## Group 3 — How does it operate?
 
-*Phases 6–8 cover the operational layer: how the supervisor talks to you, what secrets the
-project needs, and where work is tracked. Execution environment is already confirmed, so
-all three questions can be answered with full context.*
+*Phases 6–9 cover the operational layer: how the supervisor talks to you, what secrets the
+project needs, where work is tracked, and how the factory authenticates and is billed.
+Execution environment is already confirmed, so every question can be answered with full context.*
 
 ### Phase 6 — Communication channel
 

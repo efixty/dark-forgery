@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make *)",
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(scripts/editor_entrypoint.sh *)",
+      "Bash(scripts/telegram_notify.sh *)",
+      "Bash(scripts/log_write.sh *)",
+      "Bash(mkdir -p *)",
+      "Bash(python3 *)",
+      "Bash(.venv/bin/pytest *)",
+      "Bash(.venv/bin/ruff *)"
+    ]
+  }
+}
