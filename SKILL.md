@@ -571,7 +571,11 @@ handles at most one cycle; STATUS.md is the persistent memory. The role doc must
 
 ### 6. `STATUS.md` — initial board
 
-Pre-populate from Phase 1 discovery:
+Pre-populate from Phase 1 discovery. Don't just list features — **seed an ordered ladder** where
+each item builds on the previous one, so the factory's early cycles have a correct dependency
+order to follow (e.g. config → ingest → transform → render → deliver → schedule → edge-cases).
+A well-sequenced backlog is what makes the first autonomous cycles succeed instead of flailing;
+give each item a short slug and a one-line description of its acceptance bar.
 
 ```markdown
 # {Project Name} — Status
@@ -580,8 +584,9 @@ Pre-populate from Phase 1 discovery:
 *(none — factory not yet started)*
 
 ## Backlog
-- [ ] {first feature or component from Phase 1 scope}
-- [ ] {second feature}
+The ordered ladder — the supervisor takes the top unblocked item each cycle.
+- [ ] **{slug-1}** — {first capability; the foundation the rest builds on}
+- [ ] **{slug-2}** — {builds on slug-1}
 ...
 
 ## Completed
@@ -596,6 +601,29 @@ Pre-populate from Phase 1 discovery:
 
 ### 7. `Makefile`
 Build/test/setup targets for the confirmed stack. Always include `setup`, `build`, `test`.
+
+### 7b. Toolchain skeleton (code projects)
+
+Generate the language's **toolchain skeleton** so `make setup`, `make build`, and `make test`
+are real from the first cycle — a factory whose test target finds nothing gives the Engineer no
+green baseline to build against. The skeleton is:
+
+- **Package/module layout** for the stack — e.g. `src/{pkg}/__init__.py` (Python),
+  `cmd/{app}/main.go` + `go.mod` (Go), `src/main.rs` + `Cargo.toml` (Rust).
+- **Dependency manifest** — `requirements.txt` / `pyproject.toml`, `go.mod`, `Cargo.toml`.
+- **An entry-point stub that exits cleanly** — so `make run` (if applicable) works and prints a
+  clear "not implemented yet" line; it must not do product work.
+- **Exactly one smoke test** that asserts the package builds/imports — so `make test` passes on
+  a fresh clone.
+
+**Do NOT implement features, and do NOT materialize interface contracts as code.** The pipeline
+stages, endpoints, and data types are the backlog — building them is what the factory is FOR.
+Interface contracts live in `CLAUDE.md` as prose/schema (the `Item` schema, the CLI output shape,
+the API contract); the factory materializes them as code in its first cycles. The skeleton makes
+the toolchain runnable; it does not pre-build the product. Skip this step for a non-code project.
+
+**Worked reference:** `examples/feed-digester/pyproject.toml`, `src/feed_digester/`, and
+`tests/test_smoke.py` — an empty package, a clean-exit entry stub, and a single import smoke test.
 
 ### 8. `.claude/settings.json`
 Bash permissions for the scripts and tools used in this project:
